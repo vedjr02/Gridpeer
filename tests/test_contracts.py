@@ -50,8 +50,9 @@ def test_forecast_output_roundtrip():
 
 def test_agent_decision_requires_positive_quantity():
     import pytest
+    from pydantic import ValidationError
 
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         AgentDecision(
             household_id="hh_001",
             tick=1,
