@@ -28,14 +28,17 @@ SCHEMA_VERSION = "0.1.0"
 # Enums
 # ---------------------------------------------------------------------------
 
-class OrderSide(str, Enum):
+# str-mixin kept intentionally (not StrEnum): StrEnum would change str() to the
+# bare value and alter existing behavior. Suppress ruff's modernization here.
+class OrderSide(str, Enum):  # noqa: UP042
     """Whether an agent is offering to buy or sell energy in a given tick."""
 
     BUY = "buy"
     SELL = "sell"
 
 
-class AgentRole(str, Enum):
+# str-mixin kept intentionally (not StrEnum); see OrderSide above.
+class AgentRole(str, Enum):  # noqa: UP042
     """Household archetype. Determines available strategies, not identity."""
 
     PURE_CONSUMER = "pure_consumer"       # no generation, only buys
@@ -61,10 +64,14 @@ class HouseholdProfile(BaseModel):
     solar_capacity_kw: float = Field(ge=0, description="Peak solar generation capacity, kW")
     battery_capacity_kwh: float = Field(ge=0, description="Total battery storage capacity, kWh")
     grid_export_tariff_eur_per_kwh: float = Field(
-        ge=0, description="Fallback tariff if the household just exports to the grid instead of trading"
+        ge=0,
+        description="Fallback tariff if the household just exports to the grid instead of trading",
     )
     grid_import_tariff_eur_per_kwh: float = Field(
-        ge=0, description="Fallback tariff if the household just imports from the grid instead of trading"
+        ge=0,
+        description=(
+            "Fallback tariff if the household just imports from the grid instead of trading"
+        ),
     )
 
 
@@ -88,7 +95,9 @@ class ForecastOutput(BaseModel):
         description="predicted_solar_generation_kwh - predicted_demand_kwh. "
         "Positive = expected surplus (can sell), negative = expected deficit (needs to buy)."
     )
-    confidence: float = Field(ge=0, le=1, description="Model confidence, 0-1, for display/debugging only")
+    confidence: float = Field(
+        ge=0, le=1, description="Model confidence, 0-1, for display/debugging only"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +119,9 @@ class AgentDecision(BaseModel):
         ge=0,
         description="For a SELL: minimum acceptable price. For a BUY: maximum acceptable price.",
     )
-    strategy_name: str = Field(description="e.g. 'rule_based_baseline', 'ppo_v1' — for evaluation breakdowns")
+    strategy_name: str = Field(
+        description="e.g. 'rule_based_baseline', 'ppo_v1' — for evaluation breakdowns"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +148,8 @@ class MarketState(BaseModel):
     """Snapshot of market-wide state after clearing for a given tick.
 
     Produced by: simulation/
-    Consumed by: dashboard/ (persistence + visualisation), agents/ (market context for next decision)
+    Consumed by: dashboard/ (persistence + visualisation),
+    agents/ (market context for next decision)
     """
 
     tick: int
@@ -162,9 +174,14 @@ class HouseholdOutcome(BaseModel):
     household_id: str
     total_cost_eur_p2p: float = Field(description="Actual cost/revenue under P2P trading")
     total_cost_eur_grid_baseline: float = Field(
-        description="Hypothetical cost/revenue if the household had only used grid import/export tariffs"
+        description=(
+            "Hypothetical cost/revenue if the household had only used grid "
+            "import/export tariffs"
+        )
     )
-    savings_eur: float = Field(description="grid_baseline - p2p. Positive = P2P trading saved money.")
+    savings_eur: float = Field(
+        description="grid_baseline - p2p. Positive = P2P trading saved money."
+    )
     savings_pct: float
 
 
