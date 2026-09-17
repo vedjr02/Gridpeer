@@ -205,3 +205,158 @@ def test_savings_never_exceed_the_tariff_gap():
     total_savings = sum(s.savings_eur for s in settlements.values())
     assert total_savings == pytest.approx(gap_eur)
     assert all(s.savings_eur >= 0 for s in settlements.values())
+
+
+# ---------------------------------------------------------------------------
+# Settling against meters (actual_net_position_kwh)
+# ---------------------------------------------------------------------------
+
+
+def test_selling_energy_you_do_not_have_cannot_make_money():
+    """The exploit metered settlement exists to close, calculated by hand.
+
+    hh_sell has no surplus at all but offers 50 kWh from 0.20; hh_buy needs only
+    1 kWh but bids for 50 up to 0.24. They clear 50 kWh at the 0.22 midpoint (EUR 11).
+    Settled on orders alone, hh_sell would book EUR 7.50 of "savings" for energy it
+    never generated. Against the meters:
+
+        hh_sell: earns 11.00, must import the 50 kWh it did not have: 50 * 0.25 = 12.50
+                 p2p 1.50 vs grid-only 0.00                              -> saves -1.50
+        hh_buy:  pays 11.00, exports the 49 kWh it did not use: 49 * 0.07 = 3.43
+                 p2p 7.57 vs grid-only 1 * 0.25 = 0.25                   -> saves -7.32
+    """
+    orders = [
+        order("hh_sell", OrderSide.SELL, quantity_kwh=50.0, limit_price_eur_per_kwh=0.20),
+        order("hh_buy", OrderSide.BUY, quantity_kwh=50.0, limit_price_eur_per_kwh=0.24),
+    ]
+    state = clear_tick(tick=TICK, timestamp=TIMESTAMP, orders=orders)
+
+    settlements = settle_tick(
+        state,
+        {"hh_buy": profile("hh_buy"), "hh_sell": profile("hh_sell")},
+        actual_net_position_kwh={"hh_sell": 0.0, "hh_buy": -1.0},
+    )
+
+    seller = settlements["hh_sell"]
+    assert seller.p2p_cost_eur == pytest.approx(1.50)
+    assert seller.grid_only_cost_eur == pytest.approx(0.0)
+    assert seller.savings_eur == pytest.approx(-1.50)
+    assert seller.grid_fallback_kwh == pytest.approx(50.0)
+
+    buyer = settlements["hh_buy"]
+    assert buyer.p2p_cost_eur == pytest.approx(7.57)
+    assert buyer.grid_only_cost_eur == pytest.approx(0.25)
+    assert buyer.savings_eur == pytest.approx(-7.32)
+
+
+@pytest.mark.parametrize(
+    ("orders", "actual_net_position_kwh"),
+    [
+        pytest.param(
+            [
+                order("hh_sell", OrderSide.SELL, quantity_kwh=2.0, limit_price_eur_per_kwh=0.10),
+                order("hh_buy", OrderSide.BUY, quantity_kwh=2.0, limit_price_eur_per_kwh=0.20),
+            ],
+            {"hh_sell": 2.0, "hh_buy": -2.0},
+            id="full-match",
+        ),
+        pytest.param(
+            [
+                order("hh_buy", OrderSide.BUY, quantity_kwh=1.0, limit_price_eur_per_kwh=0.08),
+                order("hh_sell", OrderSide.SELL, quantity_kwh=1.0, limit_price_eur_per_kwh=0.12),
+            ],
+            {"hh_sell": 1.0, "hh_buy": -1.0},
+            id="no-match",
+        ),
+        pytest.param(
+            [
+                order("hh_buy", OrderSide.BUY, quantity_kwh=3.0, limit_price_eur_per_kwh=0.20),
+                order("hh_sell", OrderSide.SELL, quantity_kwh=1.0, limit_price_eur_per_kwh=0.10),
+            ],
+            {"hh_sell": 1.0, "hh_buy": -3.0},
+            id="partial-fill",
+        ),
+    ],
+)
+def test_when_orders_match_the_meters_both_settlements_agree(orders, actual_net_position_kwh):
+    """Metered settlement changes nothing for an honest, perfectly forecast book."""
+    state = clear_tick(tick=TICK, timestamp=TIMESTAMP, orders=orders)
+    profiles = {"hh_buy": profile("hh_buy"), "hh_sell": profile("hh_sell")}
+
+    by_orders = settle_tick(state, profiles, orders)
+    by_meters = settle_tick(state, profiles, actual_net_position_kwh=actual_net_position_kwh)
+
+    assert by_meters.keys() == by_orders.keys()
+    for household_id, expected in by_orders.items():
+        actual = by_meters[household_id]
+        assert actual.traded_kwh == pytest.approx(expected.traded_kwh)
+        assert actual.grid_fallback_kwh == pytest.approx(expected.grid_fallback_kwh)
+        assert actual.p2p_cost_eur == pytest.approx(expected.p2p_cost_eur)
+        assert actual.grid_only_cost_eur == pytest.approx(expected.grid_only_cost_eur)
+
+
+def test_forecast_error_is_settled_at_grid_tariffs():
+    """Both sides traded 2.0 kWh at 0.15, but the forecasts were off.
+
+    hh_sell generated only 1.5 kWh, so it imports the 0.5 kWh shortfall:
+        p2p -0.30 + 0.5 * 0.25 = -0.175 vs grid-only -1.5 * 0.07 = -0.105  -> saves 0.07
+    hh_buy actually needed 2.5 kWh, so it imports the extra 0.5 kWh:
+        p2p  0.30 + 0.5 * 0.25 =  0.425 vs grid-only  2.5 * 0.25 =  0.625  -> saves 0.20
+    """
+    orders = [
+        order("hh_sell", OrderSide.SELL, quantity_kwh=2.0, limit_price_eur_per_kwh=0.10),
+        order("hh_buy", OrderSide.BUY, quantity_kwh=2.0, limit_price_eur_per_kwh=0.20),
+    ]
+    state = clear_tick(tick=TICK, timestamp=TIMESTAMP, orders=orders)
+
+    settlements = settle_tick(
+        state,
+        {"hh_buy": profile("hh_buy"), "hh_sell": profile("hh_sell")},
+        actual_net_position_kwh={"hh_sell": 1.5, "hh_buy": -2.5},
+    )
+
+    seller = settlements["hh_sell"]
+    assert seller.grid_fallback_kwh == pytest.approx(0.5)
+    assert seller.p2p_cost_eur == pytest.approx(-0.175)
+    assert seller.savings_eur == pytest.approx(0.07)
+
+    buyer = settlements["hh_buy"]
+    assert buyer.grid_fallback_kwh == pytest.approx(0.5)
+    assert buyer.p2p_cost_eur == pytest.approx(0.425)
+    assert buyer.savings_eur == pytest.approx(0.20)
+
+
+def test_a_metered_household_that_did_not_trade_settles_at_the_grid():
+    """No order does not mean no energy: it still imported, and saved nothing."""
+    state = clear_tick(tick=TICK, timestamp=TIMESTAMP, orders=[])
+
+    settlements = settle_tick(
+        state, {"hh_quiet": profile("hh_quiet")}, actual_net_position_kwh={"hh_quiet": -1.0}
+    )
+
+    quiet = settlements["hh_quiet"]
+    assert quiet.traded_kwh == 0.0
+    assert quiet.p2p_cost_eur == pytest.approx(IMPORT_TARIFF)
+    assert quiet.grid_only_cost_eur == pytest.approx(IMPORT_TARIFF)
+    assert quiet.savings_eur == pytest.approx(0.0)
+
+
+def test_a_household_that_traded_without_a_meter_reading_is_an_error():
+    """Settling a trader with no metered position would silently trust its order."""
+    orders = [
+        order("hh_sell", OrderSide.SELL, quantity_kwh=1.0, limit_price_eur_per_kwh=0.10),
+        order("hh_buy", OrderSide.BUY, quantity_kwh=1.0, limit_price_eur_per_kwh=0.20),
+    ]
+    state = clear_tick(tick=TICK, timestamp=TIMESTAMP, orders=orders)
+    profiles = {"hh_buy": profile("hh_buy"), "hh_sell": profile("hh_sell")}
+
+    with pytest.raises(KeyError, match="hh_sell"):
+        settle_tick(state, profiles, actual_net_position_kwh={"hh_buy": -1.0})
+
+
+def test_a_metered_household_without_a_profile_is_an_error():
+    """Metered settlement needs tariffs just as much as order-based settlement does."""
+    state = clear_tick(tick=TICK, timestamp=TIMESTAMP, orders=[])
+
+    with pytest.raises(KeyError, match="hh_quiet"):
+        settle_tick(state, {}, actual_net_position_kwh={"hh_quiet": -1.0})
