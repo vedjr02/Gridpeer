@@ -26,6 +26,11 @@ pytest simulation/
 - `settlement.py` — `settle_tick()`: what the tick cost each household under P2P versus the
   grid-only counterfactual. Unmatched orders fall back to that household's own grid tariffs
   and therefore save nothing, which is what keeps the headline savings figure honest.
+  **Pass `actual_net_position_kwh`** (each household's metered net position) whenever you
+  have it: the gap between what a household traded and what its meter recorded is then
+  settled at grid tariffs, so forecast error costs money and selling energy you never
+  generated cannot turn a profit. Without it, settlement trusts the orders — on the demo
+  households that overstates the rule-based baseline's savings by about a quarter.
 
 Costs are signed: positive means money left the household, so a seller's cost is negative.
 `HouseholdOutcome` and `RunSummary` are the dashboard's to build by summing these across a
