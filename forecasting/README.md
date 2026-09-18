@@ -7,13 +7,13 @@ Per-household demand + solar generation forecasting. See `CLAUDE.md` in this fol
 ## Status
 
 - [x] Naive baseline forecaster (`baseline.NaiveForecaster`, rolling average + flat fallback)
-- [ ] LightGBM/Prophet demand model
+- [x] LightGBM demand model (`gbm.GBMForecaster`, refits as history accrues)
 - [ ] Solar generation forecaster
-- [x] Backtest report (MAE/MAPE per household) — `backtest.backtest_household`, walk-forward
+- [x] Backtest report (MAE/MAPE per household) — `backtest.backtest_models`, rolling-origin holdout comparing naive vs GBM
 
 ## Running just this module
 
 ```bash
-python -m forecasting.backtest    # walk-forward MAE/MAPE demo report
+python -m forecasting.backtest    # holdout MAE/MAPE table, naive vs GBM
 pytest forecasting/
 ```
