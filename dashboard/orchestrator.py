@@ -158,15 +158,13 @@ def _synthetic_series(
 ) -> tuple[list[float], list[float]]:
     """One household's (demand_kwh, solar_kwh) series from data/, or the placeholder.
 
-    ``data/synthetic.py`` is owned by another task and is being built in parallel.
-    This is the single point the pipeline couples to it, coded against the agreed
-    contract:
+    ``data/synthetic.py`` is owned by another task. This is the single point the
+    pipeline couples to it, coded against its published signature:
 
         generate_household_series(
-            household_id: str,
+            profile: HouseholdProfile,
             days: int,
-            ticks_per_day: int,
-            solar_capacity_kw: float,
+            tick_minutes: int,
             seed: int,
         ) -> tuple[Sequence[float], Sequence[float]]   # (demand_kwh, solar_kwh)
 
@@ -184,10 +182,9 @@ def _synthetic_series(
 
     try:
         demand_kwh, solar_kwh = generate_household_series(
-            household_id=profile.household_id,
+            profile=profile,
             days=days,
-            ticks_per_day=TICKS_PER_DAY,
-            solar_capacity_kw=profile.solar_capacity_kw,
+            tick_minutes=TICK_MINUTES,
             seed=seed,
         )
     except TypeError as error:  # signature drifted away from the agreed contract
