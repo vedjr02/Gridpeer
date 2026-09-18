@@ -210,3 +210,47 @@ def test_persists_to_a_file_across_connections(tmp_path) -> None:
         writer.save_trades("run_a", [_trade()])
     with RunStore(db_path) as reader:
         assert reader.load_trades("run_a") == [_trade()]
+
+
+def test_battery_offset_survives_a_round_trip() -> None:
+    from shared.schemas import AgentDecision, OrderSide
+
+    decision = AgentDecision(
+        household_id="hh_003",
+        tick=40,
+        side=OrderSide.SELL,
+        quantity_kwh=1.1,
+        limit_price_eur_per_kwh=0.14,
+        strategy_name="ppo_battery_v1",
+        battery_offset_kwh=1.25,
+    )
+    with RunStore() as store:
+        store.save_decisions("run_b", [decision])
+        assert store.load_decisions("run_b") == [decision]
+
+
+def test_a_pre_0_2_0_database_is_migrated_in_place(tmp_path) -> None:
+    """A database written before battery offsets existed opens, migrates and still reads."""
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.executescript(
+        """
+        CREATE TABLE decisions (
+            run_id TEXT NOT NULL, household_id TEXT NOT NULL, tick INTEGER NOT NULL,
+            side TEXT NOT NULL, quantity_kwh REAL NOT NULL,
+            limit_price_eur_per_kwh REAL NOT NULL, strategy_name TEXT NOT NULL,
+            PRIMARY KEY (run_id, household_id, tick)
+        );
+        INSERT INTO decisions VALUES
+            ('old_run', 'hh_000', 0, 'buy', 0.5, 0.2, 'rule_based_baseline');
+        """
+    )
+    old.commit()
+    old.close()
+
+    with RunStore(path) as store:
+        [decision] = store.load_decisions("old_run")
+    assert decision.battery_offset_kwh == 0.0
+    assert decision.quantity_kwh == 0.5
