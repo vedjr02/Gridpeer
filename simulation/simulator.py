@@ -101,17 +101,21 @@ class MarketSimulator:
         initial_battery_level_kwh: Mapping[str, float] | float = 0.0,
         epoch: datetime = EPOCH,
         max_battery_power_kw: float | None = None,
+        network_charge_eur_per_kwh: float = 0.0,
     ) -> None:
         """households: the community, each with its own profile and series.
 
         initial_battery_level_kwh: starting charge, either one value for everyone or
         per household_id. epoch: wall-clock time of tick 0. max_battery_power_kw:
         battery power limit for every household, None for unlimited (the default).
+        network_charge_eur_per_kwh: levied on each P2P kWh, paid by the buyer (see
+        ``settle_tick``); zero by default.
         """
         if not households:
             raise ValueError("a simulator needs at least one household")
 
         self.epoch = epoch
+        self.network_charge_eur_per_kwh = network_charge_eur_per_kwh
         self.profiles: dict[str, HouseholdProfile] = {}
         self.environments: dict[str, HouseholdEnvironment] = {}
 
@@ -195,6 +199,7 @@ class MarketSimulator:
                 household_id: state.net_position_kwh
                 for household_id, state in household_states.items()
             },
+            network_charge_eur_per_kwh=self.network_charge_eur_per_kwh,
         )
 
         self.tick = tick + 1

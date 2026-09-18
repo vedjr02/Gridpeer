@@ -95,6 +95,8 @@ def settle_tick(
     profiles: Mapping[str, HouseholdProfile],
     orders: Sequence[AgentDecision] | None = None,
     actual_net_position_kwh: Mapping[str, float] | None = None,
+    network_charge_eur_per_kwh: float = 0.0,
+    network_charge_seller_share: float = 0.0,
 ) -> dict[str, HouseholdSettlement]:
     """Settle one cleared tick for every household that took part in it.
 
@@ -113,10 +115,26 @@ def settle_tick(
     settlement trusts the orders, which is only sound when every order exactly
     matches the household's real position — no forecast error, no over-trading.
 
+    ``network_charge_eur_per_kwh`` is levied on every kWh traded peer-to-peer. A trade
+    between neighbours still runs over the distribution network, and in most markets
+    still pays for it; the grid import tariff already includes those charges, so
+    leaving them off P2P trades overstates what trading saves. It defaults to zero,
+    which is every result so far. ``network_charge_seller_share`` is the fraction the
+    seller pays; the buyer pays the rest.
+
     Returns one settlement per participating household, keyed by household_id.
     """
+    if network_charge_eur_per_kwh < 0:
+        raise ValueError("network_charge_eur_per_kwh must be >= 0")
+    if not 0.0 <= network_charge_seller_share <= 1.0:
+        raise ValueError("network_charge_seller_share must be in [0, 1]")
+    buyer_charge = network_charge_eur_per_kwh * (1.0 - network_charge_seller_share)
+    seller_charge = network_charge_eur_per_kwh * network_charge_seller_share
+
     if actual_net_position_kwh is not None:
-        return _settle_against_meters(state, profiles, actual_net_position_kwh)
+        return _settle_against_meters(
+            state, profiles, actual_net_position_kwh, buyer_charge, seller_charge
+        )
 
     totals: dict[str, dict[str, float]] = {}
 
@@ -137,14 +155,14 @@ def settle_tick(
 
         buyer = bucket(trade.buyer_id)
         buyer["traded_kwh"] += trade.quantity_kwh
-        buyer["p2p"] += value_eur
+        buyer["p2p"] += value_eur + trade.quantity_kwh * buyer_charge
         buyer["grid_only"] += _grid_cost_eur(
             profiles[trade.buyer_id], OrderSide.BUY, trade.quantity_kwh
         )
 
         seller = bucket(trade.seller_id)
         seller["traded_kwh"] += trade.quantity_kwh
-        seller["p2p"] -= value_eur
+        seller["p2p"] -= value_eur - trade.quantity_kwh * seller_charge
         seller["grid_only"] += _grid_cost_eur(
             profiles[trade.seller_id], OrderSide.SELL, trade.quantity_kwh
         )
@@ -185,6 +203,8 @@ def _settle_against_meters(
     state: MarketState,
     profiles: Mapping[str, HouseholdProfile],
     actual_net_position_kwh: Mapping[str, float],
+    buyer_charge_eur_per_kwh: float = 0.0,
+    seller_charge_eur_per_kwh: float = 0.0,
 ) -> dict[str, HouseholdSettlement]:
     """Settle a tick against metered net positions instead of trusting the orders.
 
@@ -206,13 +226,18 @@ def _settle_against_meters(
 
     for trade in state.trades:
         value_eur = trade.quantity_kwh * trade.clearing_price_eur_per_kwh
-        for household_id, direction in ((trade.buyer_id, 1.0), (trade.seller_id, -1.0)):
+        for household_id, direction, charge in (
+            (trade.buyer_id, 1.0, buyer_charge_eur_per_kwh),
+            (trade.seller_id, -1.0, seller_charge_eur_per_kwh),
+        ):
             traded_kwh[household_id] = traded_kwh.get(household_id, 0.0) + trade.quantity_kwh
             net_sold_kwh[household_id] = (
                 net_sold_kwh.get(household_id, 0.0) - direction * trade.quantity_kwh
             )
             market_cost_eur[household_id] = (
-                market_cost_eur.get(household_id, 0.0) + direction * value_eur
+                market_cost_eur.get(household_id, 0.0)
+                + direction * value_eur
+                + trade.quantity_kwh * charge
             )
 
     unmetered = sorted(set(traded_kwh) - set(actual_net_position_kwh))

@@ -360,3 +360,59 @@ def test_a_metered_household_without_a_profile_is_an_error():
 
     with pytest.raises(KeyError, match="hh_quiet"):
         settle_tick(state, {}, actual_net_position_kwh={"hh_quiet": -1.0})
+
+
+# ---------------------------------------------------------------------------
+# Network charges on peer-to-peer trades
+# ---------------------------------------------------------------------------
+
+
+def _two_kwh_trade():
+    orders = [
+        order("hh_sell", OrderSide.SELL, quantity_kwh=2.0, limit_price_eur_per_kwh=0.10),
+        order("hh_buy", OrderSide.BUY, quantity_kwh=2.0, limit_price_eur_per_kwh=0.20),
+    ]
+    profiles = {"hh_buy": profile("hh_buy"), "hh_sell": profile("hh_sell")}
+    return clear_tick(tick=TICK, timestamp=TIMESTAMP, orders=orders), profiles, orders
+
+
+@pytest.mark.parametrize("metered", [False, True])
+def test_network_charge_is_paid_by_the_buyer_by_default(metered):
+    """Hand-worked: 2.0 kWh at 0.15, charge 0.04/kWh.
+
+    The buyer pays 0.30 + 0.08 = 0.38 instead of 0.50: saves 0.12 (was 0.20).
+    The seller is untouched.
+    """
+    state, profiles, orders = _two_kwh_trade()
+    meters = {"hh_buy": -2.0, "hh_sell": 2.0} if metered else None
+    s = settle_tick(state, profiles, orders, actual_net_position_kwh=meters,
+                    network_charge_eur_per_kwh=0.04)
+    assert s["hh_buy"].p2p_cost_eur == pytest.approx(0.38)
+    assert s["hh_buy"].savings_eur == pytest.approx(0.12)
+    assert s["hh_sell"].p2p_cost_eur == pytest.approx(-0.30)
+
+
+@pytest.mark.parametrize("metered", [False, True])
+def test_network_charge_can_be_split_with_the_seller(metered):
+    state, profiles, orders = _two_kwh_trade()
+    meters = {"hh_buy": -2.0, "hh_sell": 2.0} if metered else None
+    s = settle_tick(state, profiles, orders, actual_net_position_kwh=meters,
+                    network_charge_eur_per_kwh=0.04, network_charge_seller_share=0.5)
+    assert s["hh_buy"].p2p_cost_eur == pytest.approx(0.30 + 0.04)
+    assert s["hh_sell"].p2p_cost_eur == pytest.approx(-0.30 + 0.04)
+
+
+def test_a_charge_equal_to_the_tariff_gap_wipes_out_the_saving():
+    """Break-even: each traded kWh saves the community (import - export) - charge."""
+    state, profiles, orders = _two_kwh_trade()
+    gap = IMPORT_TARIFF - EXPORT_TARIFF
+    s = settle_tick(state, profiles, orders, network_charge_eur_per_kwh=gap)
+    assert sum(x.savings_eur for x in s.values()) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_invalid_network_charges_are_rejected():
+    state, profiles, orders = _two_kwh_trade()
+    with pytest.raises(ValueError, match="network_charge_eur_per_kwh"):
+        settle_tick(state, profiles, orders, network_charge_eur_per_kwh=-0.01)
+    with pytest.raises(ValueError, match="seller_share"):
+        settle_tick(state, profiles, orders, network_charge_seller_share=1.5)

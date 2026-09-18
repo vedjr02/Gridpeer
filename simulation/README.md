@@ -93,6 +93,15 @@ order on the position its battery choice will actually leave — one function se
 both, and a test pins that planning on the true position predicts the meter exactly.
 `MarketSimulator.step()` passes `battery_offsets_kwh` / `battery_setpoints_kwh` through.
 
+## Network charges
+
+`settle_tick(..., network_charge_eur_per_kwh=...)` levies a per-kWh charge on every P2P
+trade (buyer pays; `network_charge_seller_share` moves part to the seller), and
+`MarketSimulator` takes the same parameter. It defaults to zero, which is every other
+result in the repo. A neighbour-to-neighbour trade still runs over the distribution
+network, and the grid import tariff already carries those charges — so without this,
+P2P savings are optimistic. `reports/realism_study.md` shows how fast they shrink.
+
 ## Clearing, in one paragraph
 
 `clear_tick(tick, timestamp, orders)` takes a tick's `AgentDecision` book and returns a
