@@ -69,9 +69,20 @@ the automatic battery), so the action is a correction to it; and without
 potential-based reward shaping PPO unlearned charging (-70%), because storing at noon
 costs money now and pays hours later.
 
-**Not deployable yet:** the dashboard pipeline can't pass battery state to an agent or
-take a battery command back — that is Part A and Part B of the schema-change proposal.
-This is the evidence for approving it.
+**Deployed (schema 0.2.0).** Agents now receive the battery state (`HouseholdState`) and
+adjust the battery through `AgentDecision.battery_offset_kwh`. Through
+`dashboard.run_pipeline(use_battery=True, battery_power_kw=2.5)` the policy reproduces
+the experiment exactly (EUR 61.70 vs 55.47 on the 20 test runs; pinned by
+`tests/test_battery_pipeline.py` for the baseline). `BatteryPPOTrader` serves it, and
+`python scripts/compare_strategies.py` persists the battery pair for the dashboard. On
+the dashboard's demo households: EUR 2.53 vs 2.22 (+13.8%), peak -12.8%, every household
+saving. Given the battery state, `RuleBasedTrader` plans around the automatic battery; with
+batteries off it behaves exactly as before.
+
+The offset is an *adjustment* to the automatic battery, not the target setpoint the
+proposal first described: sent as a setpoint, the same policy fell from +11.2% to -8.5%
+against the automatic battery, because a setpoint stops the battery absorbing forecast
+error.
 
 ## The RL environment
 

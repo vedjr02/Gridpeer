@@ -43,6 +43,7 @@ from shared.schemas import (
     ForecastOutput,
     HouseholdOutcome,
     HouseholdProfile,
+    HouseholdState,
     MarketState,
     RunSummary,
 )
@@ -67,9 +68,16 @@ class TradingStrategy(Protocol):
     """
 
     def decide(
-        self, forecast: ForecastOutput, profile: HouseholdProfile
+        self,
+        forecast: ForecastOutput,
+        profile: HouseholdProfile,
+        state: HouseholdState | None = None,
     ) -> AgentDecision | None:
-        """Return this household's order for the tick, or None to sit it out."""
+        """Return this household's order for the tick, or None to sit it out.
+
+        ``state`` is the battery at the start of the tick (schema 0.2.0); strategies
+        that do not use a battery ignore it.
+        """
         ...
 
 

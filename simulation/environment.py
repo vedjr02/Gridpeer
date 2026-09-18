@@ -20,8 +20,47 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 
 from shared.schemas import HouseholdProfile
+from shared.schemas import HouseholdState as SharedHouseholdState
+
+
+def battery_flow_kwh(
+    net_kwh: float,
+    battery_level_kwh: float,
+    battery_capacity_kwh: float,
+    max_flow_kwh: float = float("inf"),
+    battery_offset_kwh: float = 0.0,
+    battery_setpoint_kwh: float | None = None,
+) -> float:
+    """Energy a battery moves in one tick, kWh: + out of the battery, - into it.
+
+    The one definition of the battery physics. The simulator calls it with the
+    tick's actual position; agents call it with a forecast to plan an order. So an
+    agent's plan and what the meter then records can never disagree on the rules.
+
+    Automatic mode charges from surplus and covers deficit; ``battery_offset_kwh``
+    then discharges more (positive) or holds back / charges more (negative). A
+    setpoint instead drives the charge toward a target. Always within capacity and
+    the per-tick flow limit.
+    """
+    if battery_setpoint_kwh is not None:
+        flow_kwh = battery_level_kwh - min(max(battery_setpoint_kwh, 0.0), battery_capacity_kwh)
+    else:
+        if net_kwh > 0:
+            flow_kwh = -min(net_kwh, battery_capacity_kwh - battery_level_kwh)
+        else:
+            flow_kwh = min(-net_kwh, battery_level_kwh)
+        flow_kwh += battery_offset_kwh
+    flow_kwh = max(-max_flow_kwh, min(max_flow_kwh, flow_kwh))
+    # Capacity bounds: can neither empty below zero nor fill above capacity.
+    return max(battery_level_kwh - battery_capacity_kwh, min(battery_level_kwh, flow_kwh))
+
+
+def max_flow_kwh_per_tick(max_power_kw: float | None, tick_minutes: int = 30) -> float:
+    """A power limit in kW as energy per tick in kWh; unlimited when None."""
+    return float("inf") if max_power_kw is None else max_power_kw * tick_minutes / 60.0
 
 
 @dataclass(frozen=True)
@@ -105,12 +144,9 @@ class HouseholdEnvironment:
         if max_battery_power_kw is not None and max_battery_power_kw < 0:
             raise ValueError(f"{profile.household_id}: max_battery_power_kw must be >= 0")
         self.initial_battery_level_kwh = initial_battery_level_kwh
+        self.max_battery_power_kw = max_battery_power_kw
         # Energy the battery can move in one tick, kWh; infinite when unlimited.
-        self.max_flow_kwh = (
-            float("inf")
-            if max_battery_power_kw is None
-            else max_battery_power_kw * tick_minutes / 60.0
-        )
+        self.max_flow_kwh = max_flow_kwh_per_tick(max_battery_power_kw, tick_minutes)
         self.battery_level_kwh = initial_battery_level_kwh
         self.tick = 0
 
@@ -129,27 +165,30 @@ class HouseholdEnvironment:
         battery_setpoint_kwh: float | None = None,
         battery_offset_kwh: float = 0.0,
     ) -> float:
-        """Energy the battery moves this tick, kWh: + out of the battery, - into it.
+        """This household's battery flow this tick; see :func:`battery_flow_kwh`."""
+        return battery_flow_kwh(
+            raw_net_kwh,
+            self.battery_level_kwh,
+            self.profile.battery_capacity_kwh,
+            self.max_flow_kwh,
+            battery_offset_kwh,
+            battery_setpoint_kwh,
+        )
 
-        One function for the physics and for planning: :meth:`step` calls it with the
-        tick's actual position, :meth:`planned_net_kwh` with a forecast. Automatic
-        mode charges from surplus and covers deficit; ``battery_offset_kwh`` then
-        discharges more (positive) or holds back / charges more (negative). A setpoint
-        instead drives the charge toward a target. Always within capacity and power.
-        """
-        level_kwh = self.battery_level_kwh
-        capacity_kwh = self.profile.battery_capacity_kwh
-        if battery_setpoint_kwh is not None:
-            flow_kwh = level_kwh - min(max(battery_setpoint_kwh, 0.0), capacity_kwh)
-        else:
-            if raw_net_kwh > 0:
-                flow_kwh = -min(raw_net_kwh, capacity_kwh - level_kwh)
-            else:
-                flow_kwh = min(-raw_net_kwh, level_kwh)
-            flow_kwh += battery_offset_kwh
-        flow_kwh = max(-self.max_flow_kwh, min(self.max_flow_kwh, flow_kwh))
-        # Capacity bounds: can neither empty below zero nor fill above capacity.
-        return max(level_kwh - capacity_kwh, min(level_kwh, flow_kwh))
+    def contract_state(
+        self, timestamp: datetime, metered_net_position_kwh: float | None = None
+    ) -> SharedHouseholdState:
+        """This household's battery state at the start of the next tick, as the shared
+        ``HouseholdState`` contract that agents receive."""
+        return SharedHouseholdState(
+            household_id=self.profile.household_id,
+            tick=self.tick,
+            timestamp=timestamp,
+            battery_level_kwh=self.battery_level_kwh,
+            battery_capacity_kwh=self.profile.battery_capacity_kwh,
+            battery_max_power_kw=self.max_battery_power_kw,
+            metered_net_position_kwh=metered_net_position_kwh,
+        )
 
     def planned_net_kwh(
         self,

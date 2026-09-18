@@ -90,6 +90,17 @@ def _grid_cost_of_net_position_eur(profile: HouseholdProfile, net_position_kwh: 
     return _grid_cost_eur(profile, OrderSide.BUY, -net_position_kwh)
 
 
+def grid_cost_of_net_position_eur(profile: HouseholdProfile, net_position_kwh: float) -> float:
+    """What a net position costs settled entirely at grid tariffs (+ surplus exported).
+
+    Given a household's *raw* position — solar minus demand, before any battery — this
+    is the status quo: no battery, no marketplace. It is the yardstick that can see
+    what a battery earns; the grid-only figure in a settlement is taken after the
+    battery and cannot.
+    """
+    return _grid_cost_of_net_position_eur(profile, net_position_kwh)
+
+
 def settle_tick(
     state: MarketState,
     profiles: Mapping[str, HouseholdProfile],

@@ -24,13 +24,42 @@ trades would flatter any RL policy compared against it.
 
 from __future__ import annotations
 
-from shared.schemas import AgentDecision, ForecastOutput, HouseholdProfile, OrderSide
+from shared.schemas import (
+    AgentDecision,
+    ForecastOutput,
+    HouseholdProfile,
+    HouseholdState,
+    OrderSide,
+)
+from simulation.environment import battery_flow_kwh, max_flow_kwh_per_tick
 
 STRATEGY_NAME = "rule_based_baseline"
 
 # Below this, a position is not worth an order (1 Wh). AgentDecision requires a
 # positive quantity, so "nothing to trade" is no order at all, not a zero one.
 MIN_TRADEABLE_KWH = 1e-3
+
+
+def planned_net_kwh(
+    forecast: ForecastOutput,
+    state: HouseholdState | None,
+    battery_offset_kwh: float = 0.0,
+) -> float:
+    """The metered position a forecast implies once the battery has done its part.
+
+    Uses simulation's own battery physics, so the plan and the meter agree on the
+    rules. With no state or no battery, it is simply the forecast.
+    """
+    net_kwh = forecast.predicted_net_position_kwh
+    if state is None or state.battery_capacity_kwh <= 0:
+        return net_kwh
+    return net_kwh + battery_flow_kwh(
+        net_kwh,
+        state.battery_level_kwh,
+        state.battery_capacity_kwh,
+        max_flow_kwh_per_tick(state.battery_max_power_kw),
+        battery_offset_kwh,
+    )
 
 
 class RuleBasedTrader:
@@ -96,13 +125,21 @@ class RuleBasedTrader:
         return ceiling - (1.0 - eagerness) * gap
 
     def decide(
-        self, forecast: ForecastOutput, profile: HouseholdProfile
+        self,
+        forecast: ForecastOutput,
+        profile: HouseholdProfile,
+        state: HouseholdState | None = None,
     ) -> AgentDecision | None:
         """One household's order for one tick, or None if it has nothing to trade.
 
         ``forecast`` and ``profile`` must describe the same household. Returns None
         when the forecast net position is effectively zero — a household in balance
         should sit the tick out rather than submit a token order.
+
+        With ``state`` (the battery at the start of the tick), the order is planned on
+        what the automatic battery will leave of the forecast: surplus it will absorb
+        is not offered, deficit it will cover is not bought. Without a battery or a
+        state, the order is exactly what it has always been.
         """
         if forecast.household_id != profile.household_id:
             raise ValueError(
@@ -110,7 +147,7 @@ class RuleBasedTrader:
                 f"{profile.household_id}"
             )
 
-        net_position_kwh = forecast.predicted_net_position_kwh
+        net_position_kwh = planned_net_kwh(forecast, state)
         quantity_kwh = abs(net_position_kwh)
         if quantity_kwh < MIN_TRADEABLE_KWH:
             return None

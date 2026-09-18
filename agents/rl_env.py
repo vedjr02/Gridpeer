@@ -69,10 +69,16 @@ import numpy as np
 from gymnasium import spaces
 from pettingzoo import ParallelEnv
 
-from agents.baseline import MIN_TRADEABLE_KWH, RuleBasedTrader
+from agents.baseline import MIN_TRADEABLE_KWH, RuleBasedTrader, planned_net_kwh
 from forecasting.baseline import NaiveForecaster
-from shared.schemas import AgentDecision, ForecastOutput, HouseholdProfile, OrderSide
-from simulation.environment import HouseholdEnvironment
+from shared.schemas import (
+    AgentDecision,
+    ForecastOutput,
+    HouseholdProfile,
+    HouseholdState,
+    OrderSide,
+)
+from simulation.environment import max_flow_kwh_per_tick
 from simulation.simulator import HouseholdSeries, MarketSimulator, TickResult, timestamp_for
 
 OBSERVATION_SIZE = 8
@@ -183,7 +189,7 @@ def battery_decision(
     action: Sequence[float] | np.ndarray,
     forecast: ForecastOutput,
     profile: HouseholdProfile,
-    environment: HouseholdEnvironment,
+    state: HouseholdState,
     strategy_name: str,
 ) -> tuple[AgentDecision | None, float]:
     """An order and a battery offset from a battery-controlling action.
@@ -193,16 +199,20 @@ def battery_decision(
     adjusts the automatic battery by up to one tick's worth of power: positive
     discharges extra to sell to a neighbour, negative holds charge back for later.
     The household plans its order on the metered position that choice implies —
-    the same physics the simulator then runs — and ``action[0]`` scales it.
+    simulation's own physics — and ``action[0]`` scales it. The offset travels on
+    the order (``AgentDecision.battery_offset_kwh``), which is how the pipeline
+    carries it to the battery.
     """
-    max_flow_kwh = environment.max_flow_kwh
+    max_flow_kwh = max_flow_kwh_per_tick(state.battery_max_power_kw)
     if not math.isfinite(max_flow_kwh):
         max_flow_kwh = profile.battery_capacity_kwh
     offset_kwh = float(np.clip(action[1], -1.0, 1.0)) * max_flow_kwh
-    planned_net_kwh = environment.planned_net_kwh(
-        forecast.predicted_net_position_kwh, battery_offset_kwh=offset_kwh
+    order = _order(
+        planned_net_kwh(forecast, state, offset_kwh), action[0], forecast, profile,
+        strategy_name,
     )
-    order = _order(planned_net_kwh, action[0], forecast, profile, strategy_name)
+    if order is not None:
+        order = order.model_copy(update={"battery_offset_kwh": offset_kwh})
     return order, offset_kwh
 
 
@@ -407,11 +417,13 @@ class GridPeerParallelEnv(ParallelEnv):
             if agent not in actions:
                 continue
             if self.battery_control:
-                order, offsets[agent] = battery_decision(
+                order, _ = battery_decision(
                     actions[agent],
                     self._forecasts[agent],
                     self._profiles[agent],
-                    self._simulator.environments[agent],
+                    self._simulator.environments[agent].contract_state(
+                        self._forecasts[agent].timestamp
+                    ),
                     self.strategy_name,
                 )
             else:
@@ -421,6 +433,10 @@ class GridPeerParallelEnv(ParallelEnv):
                 )
             if order is not None:
                 orders.append(order)
+                # The adjustment rides on the order, as in the pipeline (schema 0.2.0):
+                # no order, no adjustment — the battery stays automatic.
+                if order.battery_offset_kwh:
+                    offsets[agent] = order.battery_offset_kwh
         result = self._simulator.step(orders, battery_offsets_kwh=offsets or None)
         self.last_tick = result
 

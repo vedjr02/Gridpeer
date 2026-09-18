@@ -175,25 +175,22 @@ def without_batteries(households: Sequence[HouseholdSeries]) -> list[HouseholdSe
 
 
 def baseline_decider(aware: bool) -> Decider:
-    """The rule-based baseline under the automatic battery, aware of it or not."""
+    """The rule-based baseline under the automatic battery, aware of it or not.
+
+    Aware means it is handed the battery state (schema 0.2.0) — exactly what the
+    dashboard pipeline now gives it — and plans on what the battery will leave.
+    """
     trader = RuleBasedTrader()
 
     def decide(simulator, forecasts):
         orders = []
         for household_id, forecast in forecasts.items():
-            profile = simulator.profiles[household_id]
-            if aware:
-                # What the automatic battery will leave of the forecast position: the
-                # simulator's own physics, run on the forecast.
-                environment = simulator.environments[household_id]
-                forecast = forecast.model_copy(
-                    update={
-                        "predicted_net_position_kwh": environment.planned_net_kwh(
-                            forecast.predicted_net_position_kwh
-                        )
-                    }
-                )
-            order = trader.decide(forecast, profile)
+            state = (
+                simulator.environments[household_id].contract_state(forecast.timestamp)
+                if aware
+                else None
+            )
+            order = trader.decide(forecast, simulator.profiles[household_id], state)
             if order is not None:
                 orders.append(order)
         return orders, None
@@ -210,12 +207,15 @@ def policy_decider(model: PPO, battery: bool, strategy_name: str) -> Decider:
         for household_id, forecast in forecasts.items():
             profile = simulator.profiles[household_id]
             if battery:
-                environment = simulator.environments[household_id]
-                obs = build_battery_observation(forecast, profile, environment.battery_level_kwh)
+                state = simulator.environments[household_id].contract_state(forecast.timestamp)
+                obs = build_battery_observation(forecast, profile, state.battery_level_kwh)
                 action, _ = model.predict(obs, deterministic=True)
-                order, offsets[household_id] = battery_decision(
-                    action, forecast, profile, environment, strategy_name
-                )
+                order, _ = battery_decision(action, forecast, profile, state, strategy_name)
+                # The contract carries the battery adjustment on the order, so a
+                # household that places no order leaves its battery automatic —
+                # exactly as the dashboard pipeline will run it.
+                if order is not None:
+                    offsets[household_id] = order.battery_offset_kwh
             else:
                 action, _ = model.predict(build_observation(forecast, profile), deterministic=True)
                 order = decision_from_action(action, forecast, profile, strategy_name)

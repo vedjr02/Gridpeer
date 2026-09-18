@@ -97,11 +97,15 @@ def test_positive_battery_action_turns_stored_energy_into_a_sell_order():
     environment = env._simulator.environments[producer]
     assert environment.battery_level_kwh > 1.0, "the producer should have stored midday solar"
 
+    forecast = env.current_forecast(producer)
     order, offset = battery_decision(
-        [0.0, 1.0], env.current_forecast(producer), env._profiles[producer], environment, "t"
+        [0.0, 1.0], forecast, env._profiles[producer],
+        environment.contract_state(forecast.timestamp), "t",
     )
     assert offset == pytest.approx(environment.max_flow_kwh)
     assert order is not None and order.side is OrderSide.SELL
+    # The adjustment travels on the order: that is how the pipeline delivers it.
+    assert order.battery_offset_kwh == pytest.approx(offset)
 
 
 def test_rollout_reports_zero_savings_for_the_status_quo_itself():

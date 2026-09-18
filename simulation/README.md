@@ -92,6 +92,9 @@ by default so every existing result is unchanged):
 order on the position its battery choice will actually leave — one function serves
 both, and a test pins that planning on the true position predicts the meter exactly.
 `MarketSimulator.step()` passes `battery_offsets_kwh` / `battery_setpoints_kwh` through.
+`battery_flow_kwh()` is the physics as a pure function — the simulator steps with it and
+agents plan with it — and `HouseholdEnvironment.contract_state()` emits the shared
+`HouseholdState` (schema 0.2.0) that agents receive each tick.
 
 ## Network charges
 

@@ -5,7 +5,12 @@ Settlement figures (P2P versus grid-only) are exposed per tick for the dashboard
 roll up into HouseholdOutcome and RunSummary.
 """
 
-from simulation.environment import HouseholdEnvironment, HouseholdState
+from simulation.environment import (
+    HouseholdEnvironment,
+    HouseholdState,
+    battery_flow_kwh,
+    max_flow_kwh_per_tick,
+)
 from simulation.market import clear_tick, trade_id
 from simulation.settlement import HouseholdSettlement, settle_tick
 
@@ -13,6 +18,8 @@ __all__ = [
     "HouseholdEnvironment",
     "HouseholdSettlement",
     "HouseholdState",
+    "battery_flow_kwh",
+    "max_flow_kwh_per_tick",
     "clear_tick",
     "settle_tick",
     "trade_id",
