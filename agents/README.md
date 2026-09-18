@@ -7,7 +7,7 @@ Baseline + RL trading strategies. See `CLAUDE.md` in this folder for build guida
 ## Status
 
 - [x] Rule-based baseline, wired through the real pipeline
-- [ ] PettingZoo-style multi-agent environment wrapper
+- [x] PettingZoo multi-agent environment (`rl_env.py`) + SB3 shared-policy adapter (`rl_vec_env.py`)
 - [ ] PPO training (Stable-Baselines3)
 - [x] Evaluation harness producing `RunSummary` (baseline vs. RL)
 
@@ -17,6 +17,27 @@ Baseline + RL trading strategies. See `CLAUDE.md` in this folder for build guida
 python -m agents.run_baseline    # forecasting -> agents -> market -> settlement, printed
 pytest agents/
 ```
+
+## The RL environment
+
+`GridPeerParallelEnv` follows PettingZoo's Parallel API, one agent per household, on top of
+`simulation.MarketSimulator` — the same clearing and meter settlement the dashboard runs.
+
+- **Observes** its own forecast, the time of day and its own tariffs: only what
+  `decide(forecast, profile)` receives, so a trained policy deploys into the pipeline as is.
+- **Chooses** how much of its forecast position to offer and how eagerly to price it inside
+  its tariff gap. The baseline is a point in this action space, so a policy can always
+  recover it.
+- **Is rewarded** with meter-settled savings against grid-only: over-offering energy it
+  does not have is bought back at the import tariff, not paid for.
+
+Driven with the baseline's decisions it reproduces `run_pipeline`'s savings exactly — that
+equivalence is a test, so the policy is trained on the market it is judged on.
+`SharedPolicyVecEnv` presents every household as one slot of an SB3 vector env: one shared
+policy (parameter sharing), which is also how it is deployed.
+
+Batteries are off by default because no shared contract lets an agent observe them yet —
+see the open `schema-change` proposal.
 
 ## How the baseline prices an order
 
