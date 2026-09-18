@@ -100,11 +100,13 @@ class MarketSimulator:
         households: Sequence[HouseholdSeries],
         initial_battery_level_kwh: Mapping[str, float] | float = 0.0,
         epoch: datetime = EPOCH,
+        max_battery_power_kw: float | None = None,
     ) -> None:
         """households: the community, each with its own profile and series.
 
         initial_battery_level_kwh: starting charge, either one value for everyone or
-        per household_id. epoch: wall-clock time of tick 0.
+        per household_id. epoch: wall-clock time of tick 0. max_battery_power_kw:
+        battery power limit for every household, None for unlimited (the default).
         """
         if not households:
             raise ValueError("a simulator needs at least one household")
@@ -131,6 +133,8 @@ class MarketSimulator:
                 demand_kwh=household.demand_kwh,
                 solar_kwh=household.solar_kwh,
                 initial_battery_level_kwh=float(level_kwh),
+                max_battery_power_kw=max_battery_power_kw,
+                tick_minutes=TICK_MINUTES,
             )
 
         # A tick needs every household, so the run is as long as the shortest series.
@@ -148,12 +152,21 @@ class MarketSimulator:
             environment.reset()
         self.tick = 0
 
-    def step(self, orders: Sequence[AgentDecision]) -> TickResult:
+    def step(
+        self,
+        orders: Sequence[AgentDecision],
+        battery_setpoints_kwh: Mapping[str, float] | None = None,
+        battery_offsets_kwh: Mapping[str, float] | None = None,
+    ) -> TickResult:
         """Advance one tick: run the physics, clear ``orders``, settle at the meter.
 
         ``orders`` is this tick's book, at most one per household — whatever the
         agents decided, including none at all. Their ``tick`` must be the tick being
         stepped; a mismatch is a desynchronised caller, not something to paper over.
+        ``battery_setpoints_kwh`` drives named households' batteries toward a target
+        charge this tick; ``battery_offsets_kwh`` adjusts their automatic behaviour
+        instead (+ discharge more, - hold back). Everyone else's battery runs
+        automatically, as before.
         """
         if self.tick >= self.num_ticks:
             raise IndexError(
@@ -165,8 +178,12 @@ class MarketSimulator:
 
         # Physics first: what each household generated, used and stored this tick is
         # true regardless of what anyone offered the market.
+        setpoints = battery_setpoints_kwh or {}
+        offsets = battery_offsets_kwh or {}
         household_states = {
-            household_id: environment.step()
+            household_id: environment.step(
+                setpoints.get(household_id), offsets.get(household_id, 0.0)
+            )
             for household_id, environment in self.environments.items()
         }
 

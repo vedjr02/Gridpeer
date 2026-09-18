@@ -249,3 +249,33 @@ def test_batteries_can_start_part_charged():
     # 1.0 kWh of headroom left, so 1.0 kWh of the 2.0 kWh surplus reaches the market.
     assert result.household_states["hh_sell"].battery_level_kwh == pytest.approx(5.0)
     assert result.household_states["hh_sell"].net_position_kwh == pytest.approx(1.0)
+
+
+def test_battery_setpoints_reach_named_households_only():
+    """One household's battery is commanded; the others keep running automatically."""
+    from simulation.simulator import HouseholdSeries as Series
+
+    def prosumer(household_id):
+        return Series(
+            profile=HouseholdProfile(
+                household_id=household_id,
+                role=AgentRole.PROSUMER,
+                has_solar=True,
+                solar_capacity_kw=3.0,
+                battery_capacity_kwh=5.0,
+                grid_export_tariff_eur_per_kwh=0.07,
+                grid_import_tariff_eur_per_kwh=0.25,
+            ),
+            demand_kwh=[1.0],
+            solar_kwh=[3.0],
+        )
+
+    simulator = MarketSimulator([prosumer("a"), prosumer("b")])
+    result = simulator.step([], battery_setpoints_kwh={"a": 0.0})
+
+    # a holds its battery empty, so its 2.0 kWh surplus reaches the meter.
+    assert result.household_states["a"].battery_level_kwh == 0.0
+    assert result.household_states["a"].net_position_kwh == pytest.approx(2.0)
+    # b runs automatically and stores its surplus.
+    assert result.household_states["b"].battery_level_kwh == pytest.approx(2.0)
+    assert result.household_states["b"].net_position_kwh == pytest.approx(0.0)

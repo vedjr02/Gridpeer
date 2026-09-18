@@ -78,6 +78,21 @@ Costs are signed: positive means money left the household, so a seller's cost is
 `HouseholdOutcome` and `RunSummary` are the dashboard's to build by summing these across a
 run — no schema change needed.
 
+## Battery control
+
+`HouseholdEnvironment.step()` runs the automatic battery by default. Two optional
+controls, both within capacity and an optional power limit (`max_battery_power_kw`, off
+by default so every existing result is unchanged):
+
+- `battery_offset_kwh` adjusts the automatic behaviour: positive discharges extra
+  (stored energy to sell), negative holds charge back.
+- `battery_setpoint_kwh` drives the charge toward a target level instead.
+
+`planned_net_kwh()` runs the same physics on a forecast, so a household can plan an
+order on the position its battery choice will actually leave — one function serves
+both, and a test pins that planning on the true position predicts the meter exactly.
+`MarketSimulator.step()` passes `battery_offsets_kwh` / `battery_setpoints_kwh` through.
+
 ## Clearing, in one paragraph
 
 `clear_tick(tick, timestamp, orders)` takes a tick's `AgentDecision` book and returns a

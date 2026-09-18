@@ -72,12 +72,16 @@ class HouseholdEnvironment:
         demand_kwh: Sequence[float],
         solar_kwh: Sequence[float],
         initial_battery_level_kwh: float = 0.0,
+        max_battery_power_kw: float | None = None,
+        tick_minutes: int = 30,
     ) -> None:
         """profile: the household's identity and tariffs.
 
         demand_kwh / solar_kwh: per-tick observed values in kWh, chronological and
         the same length. initial_battery_level_kwh: starting charge, within the
-        profile's battery capacity.
+        profile's battery capacity. max_battery_power_kw: charge/discharge power limit,
+        None for unlimited (the week-1 default, unchanged). tick_minutes: tick length,
+        which turns that power limit into energy per tick.
         """
         if len(demand_kwh) != len(solar_kwh):
             raise ValueError(
@@ -98,7 +102,15 @@ class HouseholdEnvironment:
         self.profile = profile
         self.demand_kwh = list(demand_kwh)
         self.solar_kwh = list(solar_kwh)
+        if max_battery_power_kw is not None and max_battery_power_kw < 0:
+            raise ValueError(f"{profile.household_id}: max_battery_power_kw must be >= 0")
         self.initial_battery_level_kwh = initial_battery_level_kwh
+        # Energy the battery can move in one tick, kWh; infinite when unlimited.
+        self.max_flow_kwh = (
+            float("inf")
+            if max_battery_power_kw is None
+            else max_battery_power_kw * tick_minutes / 60.0
+        )
         self.battery_level_kwh = initial_battery_level_kwh
         self.tick = 0
 
@@ -111,34 +123,82 @@ class HouseholdEnvironment:
         self.battery_level_kwh = self.initial_battery_level_kwh
         self.tick = 0
 
-    def step(self) -> HouseholdState:
+    def _flow_kwh(
+        self,
+        raw_net_kwh: float,
+        battery_setpoint_kwh: float | None = None,
+        battery_offset_kwh: float = 0.0,
+    ) -> float:
+        """Energy the battery moves this tick, kWh: + out of the battery, - into it.
+
+        One function for the physics and for planning: :meth:`step` calls it with the
+        tick's actual position, :meth:`planned_net_kwh` with a forecast. Automatic
+        mode charges from surplus and covers deficit; ``battery_offset_kwh`` then
+        discharges more (positive) or holds back / charges more (negative). A setpoint
+        instead drives the charge toward a target. Always within capacity and power.
+        """
+        level_kwh = self.battery_level_kwh
+        capacity_kwh = self.profile.battery_capacity_kwh
+        if battery_setpoint_kwh is not None:
+            flow_kwh = level_kwh - min(max(battery_setpoint_kwh, 0.0), capacity_kwh)
+        else:
+            if raw_net_kwh > 0:
+                flow_kwh = -min(raw_net_kwh, capacity_kwh - level_kwh)
+            else:
+                flow_kwh = min(-raw_net_kwh, level_kwh)
+            flow_kwh += battery_offset_kwh
+        flow_kwh = max(-self.max_flow_kwh, min(self.max_flow_kwh, flow_kwh))
+        # Capacity bounds: can neither empty below zero nor fill above capacity.
+        return max(level_kwh - capacity_kwh, min(level_kwh, flow_kwh))
+
+    def planned_net_kwh(
+        self,
+        forecast_net_kwh: float,
+        battery_setpoint_kwh: float | None = None,
+        battery_offset_kwh: float = 0.0,
+    ) -> float:
+        """The metered position this tick would give if the forecast came true.
+
+        What a household can know before it trades: the battery's current charge and
+        what it will command. Exactly the physics of :meth:`step`, run on a forecast.
+        """
+        return forecast_net_kwh + self._flow_kwh(
+            forecast_net_kwh, battery_setpoint_kwh, battery_offset_kwh
+        )
+
+    def step(
+        self,
+        battery_setpoint_kwh: float | None = None,
+        battery_offset_kwh: float = 0.0,
+    ) -> HouseholdState:
         """Advance one tick and return the household's state for it.
 
-        Surplus charges the battery before anything is offered to the market;
-        a deficit is drawn from the battery before anything is bought. Only what
-        the battery cannot absorb or supply reaches the market.
+        With no setpoint and no offset (the default), the battery runs automatically:
+        surplus charges it before anything is offered to the market, and a deficit
+        is drawn from it before anything is bought. Only what the battery cannot
+        absorb or supply reaches the market.
+
+        ``battery_offset_kwh`` adjusts that automatic behaviour: positive discharges
+        more — stored energy to sell to a neighbour — and negative holds charge back
+        or draws more in. ``battery_setpoint_kwh`` instead drives the charge toward a
+        target level. Either way, charging beyond the household's own surplus is
+        drawn from the grid through the meter, and everything stays within capacity
+        and the power limit.
         """
         if self.tick >= len(self):
             raise IndexError(
                 f"{self.profile.household_id}: no data for tick {self.tick} "
                 f"(series covers ticks 0-{len(self) - 1})"
             )
+        if battery_setpoint_kwh is not None and battery_offset_kwh:
+            raise ValueError("give a battery setpoint or an offset, not both")
 
         tick = self.tick
         demand = self.demand_kwh[tick]
         solar = self.solar_kwh[tick]
         raw_net_kwh = solar - demand
-
-        if raw_net_kwh > 0:
-            headroom_kwh = self.profile.battery_capacity_kwh - self.battery_level_kwh
-            charged_kwh = min(raw_net_kwh, headroom_kwh)
-            self.battery_level_kwh += charged_kwh
-            net_position_kwh = raw_net_kwh - charged_kwh
-        else:
-            deficit_kwh = -raw_net_kwh
-            discharged_kwh = min(deficit_kwh, self.battery_level_kwh)
-            self.battery_level_kwh -= discharged_kwh
-            net_position_kwh = -(deficit_kwh - discharged_kwh)
+        flow_kwh = self._flow_kwh(raw_net_kwh, battery_setpoint_kwh, battery_offset_kwh)
+        self.battery_level_kwh -= flow_kwh
 
         self.tick += 1
         return HouseholdState(
@@ -147,7 +207,7 @@ class HouseholdEnvironment:
             demand_kwh=demand,
             solar_generation_kwh=solar,
             battery_level_kwh=self.battery_level_kwh,
-            net_position_kwh=net_position_kwh,
+            net_position_kwh=raw_net_kwh + flow_kwh,
         )
 
     def run(self, num_ticks: int | None = None) -> list[HouseholdState]:
