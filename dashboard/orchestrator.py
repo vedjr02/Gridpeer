@@ -32,10 +32,12 @@ local placeholder generator below when it does not — see :func:`_synthetic_ser
 from __future__ import annotations
 
 import math
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Protocol
 
 from agents.baseline import STRATEGY_NAME, RuleBasedTrader
 from dashboard.outcomes import (
@@ -60,6 +62,11 @@ from simulation.market import clear_tick
 from simulation.settlement import settle_tick
 
 TICK_MINUTES = 30
+
+#: Where ``main`` persists a run. The dashboard reads the same default, so
+#: ``make run-sim`` followed by ``streamlit run dashboard/app.py`` shows that run.
+#: Override with GRIDPEER_DB on both sides to point at another database.
+DEFAULT_DB_PATH = Path(os.environ.get("GRIDPEER_DB", "data/gridpeer.db"))
 TICKS_PER_DAY = 24 * 60 // TICK_MINUTES  # 48, matching the CER data's resolution
 _EPOCH = datetime(2026, 1, 1, 0, 0)
 
@@ -67,6 +74,21 @@ _EPOCH = datetime(2026, 1, 1, 0, 0)
 def _timestamp(tick: int) -> datetime:
     """Wall-clock time for a tick, at half-hour (CER) resolution."""
     return _EPOCH + timedelta(minutes=TICK_MINUTES * tick)
+
+
+class TradingStrategy(Protocol):
+    """What the loop needs from a strategy: one order per household per tick.
+
+    Structural on purpose — the rule-based baseline satisfies it today and a
+    trained policy satisfies it by exposing the same ``decide``, so nothing in
+    this loop changes when the RL agents land.
+    """
+
+    def decide(
+        self, forecast: ForecastOutput, profile: HouseholdProfile
+    ) -> AgentDecision | None:
+        """Return this household's order for the tick, or None to sit it out."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -316,7 +338,7 @@ def run_pipeline(
     num_ticks: int | None = None,
     window: int = 4,
     run_id: str | None = None,
-    strategy: RuleBasedTrader | None = None,
+    strategy: TradingStrategy | None = None,
     strategy_name: str = STRATEGY_NAME,
     store: RunStore | None = None,
     db_path: str | Path | None = None,
@@ -427,9 +449,14 @@ def run_pipeline(
 
 
 def main() -> None:
-    """Run the full pipeline on demo households and print the headline numbers."""
+    """Run the full pipeline on demo households, persist it, print the headline numbers.
+
+    Persisting is the point of the default run: the dashboard renders what was
+    stored, never a run it recomputes itself.
+    """
     households = demo_households()
-    result = run_pipeline(households)
+    DEFAULT_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    result = run_pipeline(households, db_path=DEFAULT_DB_PATH)
     summary = result.summary
     assert summary is not None  # run_pipeline always summarises a non-empty run
 
@@ -447,6 +474,8 @@ def main() -> None:
             f"    {outcome.household_id}: EUR {outcome.savings_eur:+.2f} "
             f"({outcome.savings_pct:+.1f}%)"
         )
+    print(f"  persisted run {summary.run_id} to {DEFAULT_DB_PATH}")
+    print("  view it with: streamlit run dashboard/app.py")
 
 
 if __name__ == "__main__":
