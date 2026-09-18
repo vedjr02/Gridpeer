@@ -19,11 +19,13 @@ Two deliberate positions, both worth knowing before quoting any number from a ru
    ``settle_tick`` is given the metered net position, and the gap is settled at grid
    tariffs. Without that, a household could sell energy it never had and book the
    revenue as savings.
-2. **Batteries are off by default** (``use_battery=False``). simulation/ has a
-   working battery model, but whether storage is environment-owned physics or an
-   agent decision variable is an open team question (flagged in agents/README.md
-   and agents/evaluation.py). Until it is settled, the default matches the rest of
-   the codebase and the reported savings are the no-storage floor.
+2. **Batteries are off by default** (``use_battery=False``). With them on, the
+   battery is stepped *inside* the loop, after the strategy decides: each strategy
+   receives the battery state (``HouseholdState``, schema 0.2.0) and may adjust the
+   automatic battery through ``AgentDecision.battery_offset_kwh``. Savings are then
+   measured against the status quo — no battery, no market — because settlement's
+   grid-only figure is taken after the battery and cannot see what it earned. With
+   batteries off the two yardsticks are identical.
 
 Household series come from ``data.synthetic`` when that module exists, and from the
 local placeholder generator below when it does not — see :func:`_synthetic_series`.
@@ -53,13 +55,14 @@ from shared.schemas import (
     ForecastOutput,
     HouseholdOutcome,
     HouseholdProfile,
+    HouseholdState,
     MarketState,
     RunSummary,
     TradeEvent,
 )
 from simulation.environment import HouseholdEnvironment
 from simulation.market import clear_tick
-from simulation.settlement import settle_tick
+from simulation.settlement import grid_cost_of_net_position_eur, settle_tick
 
 TICK_MINUTES = 30
 
@@ -85,9 +88,16 @@ class TradingStrategy(Protocol):
     """
 
     def decide(
-        self, forecast: ForecastOutput, profile: HouseholdProfile
+        self,
+        forecast: ForecastOutput,
+        profile: HouseholdProfile,
+        state: HouseholdState | None = None,
     ) -> AgentDecision | None:
-        """Return this household's order for the tick, or None to sit it out."""
+        """Return this household's order for the tick, or None to sit it out.
+
+        ``state`` is the household's battery at the start of the tick when batteries
+        are on, else None.
+        """
         ...
 
 
@@ -265,45 +275,10 @@ def run_forecasts(
     ]
 
 
-def _metered_net_positions(
-    households: Sequence[HouseholdSeries], ticks: int, use_battery: bool
-) -> list[dict[str, float]]:
-    """Per-tick metered net position (kWh, + surplus) for every household.
-
-    With ``use_battery`` the household's battery absorbs what it can first, via
-    simulation's ``HouseholdEnvironment``; without it the net position is simply
-    solar minus demand.
-    """
-    if not use_battery:
-        return [
-            {
-                household.profile.household_id: (
-                    household.solar_kwh[tick] - household.demand_kwh[tick]
-                )
-                for household in households
-            }
-            for tick in range(ticks)
-        ]
-
-    environments = {
-        household.profile.household_id: HouseholdEnvironment(
-            profile=household.profile,
-            demand_kwh=household.demand_kwh,
-            solar_kwh=household.solar_kwh,
-        )
-        for household in households
-    }
-    return [
-        {
-            household_id: environment.step().net_position_kwh
-            for household_id, environment in environments.items()
-        }
-        for _ in range(ticks)
-    ]
-
-
 def _grid_imports_kwh(
-    state: MarketState, metered_net_kwh: dict[str, float]
+    state: MarketState,
+    metered_net_kwh: dict[str, float],
+    status_quo_net_kwh: dict[str, float] | None = None,
 ) -> tuple[float, float]:
     """Community grid import for one tick, in kWh: (under P2P, with no marketplace).
 
@@ -321,13 +296,32 @@ def _grid_imports_kwh(
             net_sold_kwh.get(trade.buyer_id, 0.0) - trade.quantity_kwh
         )
 
+    # "No marketplace" is the status quo: the raw position before any battery, when
+    # given (batteries on); otherwise the metered one, which is the same thing.
+    reference_kwh = status_quo_net_kwh if status_quo_net_kwh is not None else metered_net_kwh
     p2p_import_kwh = 0.0
-    grid_only_import_kwh = 0.0
+    grid_only_import_kwh = sum(max(0.0, -kwh) for kwh in reference_kwh.values())
     for household_id, metered_kwh in metered_net_kwh.items():
-        grid_only_import_kwh += max(0.0, -metered_kwh)
         imbalance_kwh = metered_kwh - net_sold_kwh.get(household_id, 0.0)
         p2p_import_kwh += max(0.0, -imbalance_kwh)
     return p2p_import_kwh, grid_only_import_kwh
+
+
+def _decide(
+    trader: TradingStrategy,
+    forecast: ForecastOutput,
+    profile: HouseholdProfile,
+    battery_states: dict[str, HouseholdState],
+) -> AgentDecision | None:
+    """Ask the strategy for an order, passing the battery state only when there is one.
+
+    With batteries off, ``decide`` is called with the original two arguments, so a
+    strategy written before schema 0.2.0 keeps working unchanged.
+    """
+    state = battery_states.get(profile.household_id)
+    if state is None:
+        return trader.decide(forecast, profile)
+    return trader.decide(forecast, profile, state)
 
 
 def run_pipeline(
@@ -341,13 +335,15 @@ def run_pipeline(
     db_path: str | Path | None = None,
     use_battery: bool = False,
     grid_co2_g_per_kwh: float = IE_GRID_CO2_G_PER_KWH,
+    battery_power_kw: float | None = None,
 ) -> PipelineResult:
     """Run the full pipeline and return everything it produced.
 
     Per tick: forecast every household from history only, ask the strategy for an
     order, clear the book, settle against the meter, persist. Households default to
     :func:`demo_households`; a ``store`` (or a ``db_path`` to open one) persists the
-    run, and omitting both runs in memory only.
+    run, and omitting both runs in memory only. ``battery_power_kw`` limits every
+    battery's charge/discharge power (None = unlimited).
     """
     households = list(households) if households is not None else demo_households()
     ticks = _tick_count(households, num_ticks)
@@ -360,7 +356,20 @@ def run_pipeline(
     trader = strategy or RuleBasedTrader()
     forecaster = NaiveForecaster(window=window)
     profiles = {h.profile.household_id: h.profile for h in households}
-    metered_per_tick = _metered_net_positions(households, ticks, use_battery)
+    environments = (
+        {
+            h.profile.household_id: HouseholdEnvironment(
+                profile=h.profile,
+                demand_kwh=h.demand_kwh,
+                solar_kwh=h.solar_kwh,
+                max_battery_power_kw=battery_power_kw,
+            )
+            for h in households
+        }
+        if use_battery
+        else {}
+    )
+    last_metered_kwh: dict[str, float] = {}
 
     forecasts: list[ForecastOutput] = []
     decisions: list[AgentDecision] = []
@@ -377,7 +386,16 @@ def run_pipeline(
 
         for tick in range(ticks):
             timestamp = _timestamp(tick)
-            metered_net_kwh = metered_per_tick[tick]
+            raw_net_kwh = {
+                h.profile.household_id: h.solar_kwh[tick] - h.demand_kwh[tick]
+                for h in households
+            }
+            battery_states = {
+                household_id: environment.contract_state(
+                    timestamp, last_metered_kwh.get(household_id)
+                )
+                for household_id, environment in environments.items()
+            }
 
             tick_forecasts = [
                 forecaster.forecast(
@@ -392,18 +410,40 @@ def run_pipeline(
             orders = [
                 order
                 for forecast, household in zip(tick_forecasts, households, strict=True)
-                if (order := trader.decide(forecast, household.profile)) is not None
+                if (order := _decide(trader, forecast, household.profile, battery_states))
+                is not None
             ]
+
+            # Physics after the decision: the battery runs automatically, adjusted by
+            # whatever offset the household's order carries.
+            if environments:
+                offsets = {order.household_id: order.battery_offset_kwh for order in orders}
+                metered_net_kwh = {
+                    household_id: environment.step(
+                        battery_offset_kwh=offsets.get(household_id, 0.0)
+                    ).net_position_kwh
+                    for household_id, environment in environments.items()
+                }
+                last_metered_kwh = metered_net_kwh
+            else:
+                metered_net_kwh = raw_net_kwh
+
             state = clear_tick(tick=tick, timestamp=timestamp, orders=orders)
 
             for household_id, settlement in settle_tick(
                 state, profiles, actual_net_position_kwh=metered_net_kwh
             ).items():
                 p2p_cost_eur[household_id] += settlement.p2p_cost_eur
-                grid_cost_eur[household_id] += settlement.grid_only_cost_eur
+                # The status quo — no battery, no market — so a battery's value shows.
+                # Identical to settlement.grid_only_cost_eur when batteries are off.
+                grid_cost_eur[household_id] += grid_cost_of_net_position_eur(
+                    profiles[household_id], raw_net_kwh[household_id]
+                )
 
             traded_kwh += sum(trade.quantity_kwh for trade in state.trades)
-            p2p_import_kwh, grid_only_import_kwh = _grid_imports_kwh(state, metered_net_kwh)
+            p2p_import_kwh, grid_only_import_kwh = _grid_imports_kwh(
+                state, metered_net_kwh, raw_net_kwh
+            )
             p2p_imports_kwh.append(p2p_import_kwh)
             grid_only_imports_kwh.append(grid_only_import_kwh)
 

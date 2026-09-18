@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS decisions (
     quantity_kwh               REAL NOT NULL,
     limit_price_eur_per_kwh    REAL NOT NULL,
     strategy_name              TEXT NOT NULL,
+    battery_offset_kwh         REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (run_id, household_id, tick)
 );
 
@@ -165,7 +166,21 @@ class RunStore:
         self._connection = sqlite3.connect(self.db_path)
         self._connection.row_factory = sqlite3.Row
         self._connection.executescript(_SCHEMA)
+        self._migrate()
         self._connection.commit()
+
+    def _migrate(self) -> None:
+        """Bring a database created by an older schema up to date, in place.
+
+        Schema 0.2.0 added ``AgentDecision.battery_offset_kwh``. A database written
+        before it has no such column; adding it with a default of 0 (the automatic
+        battery) keeps every existing run readable and correct.
+        """
+        columns = {row["name"] for row in self._connection.execute("PRAGMA table_info(decisions)")}
+        if "battery_offset_kwh" not in columns:
+            self._connection.execute(
+                "ALTER TABLE decisions ADD COLUMN battery_offset_kwh REAL NOT NULL DEFAULT 0"
+            )
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -282,11 +297,15 @@ class RunStore:
                 d.quantity_kwh,
                 d.limit_price_eur_per_kwh,
                 d.strategy_name,
+                d.battery_offset_kwh,
             )
             for d in decisions
         ]
         self._connection.executemany(
-            "INSERT OR REPLACE INTO decisions VALUES (?, ?, ?, ?, ?, ?, ?)", rows
+            "INSERT OR REPLACE INTO decisions (run_id, household_id, tick, side, quantity_kwh, "
+            "limit_price_eur_per_kwh, strategy_name, battery_offset_kwh) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
         )
         self._connection.commit()
 
@@ -484,6 +503,7 @@ def _decision_from_row(row: sqlite3.Row) -> AgentDecision:
         quantity_kwh=row["quantity_kwh"],
         limit_price_eur_per_kwh=row["limit_price_eur_per_kwh"],
         strategy_name=row["strategy_name"],
+        battery_offset_kwh=row["battery_offset_kwh"],
     )
 
 

@@ -40,3 +40,6 @@ Thumbs.db
 
 # Local run databases (regenerate with `make run-sim`)
 data/*.db
+
+# Trained RL policies: reproducible with `python -m agents.train_rl`, not committed.
+models/

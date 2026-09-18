@@ -10,7 +10,7 @@ Full context: `README.md`. Build plan: `ROADMAP.md`.
 
 ## The one rule that matters most
 
-**`shared/schemas.py` is the single source of truth for how modules talk to each other.** No module reaches into another module's internals — they only exchange the Pydantic models defined there (`TradeEvent`, `AgentDecision`, `ForecastOutput`, `HouseholdProfile`, `MarketState`).
+**`shared/schemas.py` is the single source of truth for how modules talk to each other.** No module reaches into another module's internals — they only exchange the Pydantic models defined there (`TradeEvent`, `AgentDecision`, `ForecastOutput`, `HouseholdProfile`, `MarketState`, `HouseholdState`).
 
 If you (the AI assistant) are working inside `simulation/`, `agents/`, `forecasting/`, or `dashboard/`, and you find yourself wanting to import something from a sibling module directly, stop — that almost always means the contract in `shared/` is missing a field, not that a direct import is the right fix. Flag it to the user instead of working around it.
 
@@ -28,8 +28,8 @@ If you (the AI assistant) are working inside `simulation/`, `agents/`, `forecast
 
 ## Module boundaries (read the module's own CLAUDE.md for detail)
 
-- `simulation/` — market clearing mechanism + household environment. Consumes `AgentDecision`, produces `TradeEvent` and `MarketState`.
-- `agents/` — trading strategies (baseline + RL). Consumes `ForecastOutput` and `MarketState`, produces `AgentDecision`.
+- `simulation/` — market clearing mechanism + household environment. Consumes `AgentDecision` (including its `battery_offset_kwh`), produces `TradeEvent`, `MarketState` and `HouseholdState` (battery state, schema 0.2.0).
+- `agents/` — trading strategies (baseline + RL). Consumes `ForecastOutput`, `MarketState` and, when batteries are on, `HouseholdState`; produces `AgentDecision`.
 - `forecasting/` — demand + solar generation forecasting. Produces `ForecastOutput`.
 - `dashboard/` — orchestration loop (ticks the simulation forward) + live visualisation. Consumes everything, persists `TradeEvent` history.
 

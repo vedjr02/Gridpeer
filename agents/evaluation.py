@@ -12,16 +12,19 @@ result against each household's grid tariffs. Swapping the baseline for a traine
 policy changes exactly one argument, which is the point — the comparison is only
 meaningful if both strategies run through identical machinery.
 
+Every tick is settled and measured against the meter, never against the orders: a
+household's cost, and the grid load it leaves behind, come from what it actually
+generated and consumed, with the difference from what it traded bought or sold at
+its grid tariffs. A strategy that offers energy it does not have therefore pays for
+the shortfall instead of booking it as a saving.
+
 Two things this harness does NOT yet do, both of which need a team decision
 rather than a unilateral one, and both flagged in the module README:
 
-1. **Batteries take no part.** Households trade their forecast net position, which
-   is solar minus demand with no storage in between. simulation/ has a working
-   battery model (HouseholdEnvironment), but wiring it in first requires agreeing
-   whether the battery is environment-owned physics or an agent decision variable —
-   the forecaster predicts raw demand and solar, so today nothing owns that choice.
-   Until it is settled, storage sits idle and the savings reported here are the
-   no-storage floor.
+1. **Batteries take no part.** Households trade solar minus demand with no storage
+   in between, so the savings here are the no-storage floor. simulation/ now runs
+   the battery as environment-owned physics (see simulation/simulator.py); moving
+   this harness onto MarketSimulator is the follow-up that picks that up.
 2. **RunSummary is also listed as a dashboard output** in dashboard/CLAUDE.md. The
    rollup is computed here because a sibling import would break the module
    boundary, but the arithmetic should live in one place before two versions drift.
@@ -40,8 +43,8 @@ from shared.schemas import (
     ForecastOutput,
     HouseholdOutcome,
     HouseholdProfile,
+    HouseholdState,
     MarketState,
-    OrderSide,
     RunSummary,
 )
 from simulation.market import clear_tick
@@ -65,9 +68,16 @@ class TradingStrategy(Protocol):
     """
 
     def decide(
-        self, forecast: ForecastOutput, profile: HouseholdProfile
+        self,
+        forecast: ForecastOutput,
+        profile: HouseholdProfile,
+        state: HouseholdState | None = None,
     ) -> AgentDecision | None:
-        """Return this household's order for the tick, or None to sit it out."""
+        """Return this household's order for the tick, or None to sit it out.
+
+        ``state`` is the battery at the start of the tick (schema 0.2.0); strategies
+        that do not use a battery ignore it.
+        """
         ...
 
 
@@ -135,6 +145,13 @@ def run_strategy(
 
     for tick in range(ticks):
         timestamp = _timestamp(tick)
+        # What each meter actually recorded this tick, against which the tick is
+        # settled. Orders are built from a forecast and can be wrong (or dishonest);
+        # only this decides what a household really owed or was owed.
+        actual_net_position_kwh = {
+            household.profile.household_id: household.solar_kwh[tick] - household.demand_kwh[tick]
+            for household in households
+        }
 
         orders: list[AgentDecision] = []
         for household in households:
@@ -152,18 +169,34 @@ def run_strategy(
         state = clear_tick(tick=tick, timestamp=timestamp, orders=orders)
         market_states.append(state)
 
-        for household_id, settlement in settle_tick(state, profiles, orders).items():
+        settlements = settle_tick(
+            state, profiles, actual_net_position_kwh=actual_net_position_kwh
+        )
+        for household_id, settlement in settlements.items():
             p2p_cost_eur[household_id] += settlement.p2p_cost_eur
             grid_cost_eur[household_id] += settlement.grid_only_cost_eur
-        traded_kwh_total += sum(trade.quantity_kwh for trade in state.trades)
 
-        # Peak load: under P2P only the unmatched buys are drawn from the grid,
-        # whereas with no marketplace every buy order would be.
+        net_sold_kwh: dict[str, float] = {}
+        for trade in state.trades:
+            traded_kwh_total += trade.quantity_kwh
+            net_sold_kwh[trade.seller_id] = (
+                net_sold_kwh.get(trade.seller_id, 0.0) + trade.quantity_kwh
+            )
+            net_sold_kwh[trade.buyer_id] = (
+                net_sold_kwh.get(trade.buyer_id, 0.0) - trade.quantity_kwh
+            )
+
+        # Peak load, measured at the meter for the same reason settlement is: a
+        # household draws from the grid whatever its own generation and its trades
+        # did not cover. With no marketplace, every deficit is drawn from the grid.
         p2p_imports_per_tick.append(
-            sum(order.quantity_kwh for order in state.unmatched_buy_orders)
+            sum(
+                max(0.0, net_sold_kwh.get(household_id, 0.0) - actual_kwh)
+                for household_id, actual_kwh in actual_net_position_kwh.items()
+            )
         )
         grid_imports_per_tick.append(
-            sum(order.quantity_kwh for order in orders if order.side is OrderSide.BUY)
+            sum(max(0.0, -actual_kwh) for actual_kwh in actual_net_position_kwh.values())
         )
 
     outcomes = [_outcome(hid, p2p_cost_eur[hid], grid_cost_eur[hid]) for hid in profiles]
