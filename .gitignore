@@ -37,3 +37,6 @@ Thumbs.db
 
 # Docker
 *.pid
+
+# Local run databases (regenerate with `make run-sim`)
+data/*.db
