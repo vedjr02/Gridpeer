@@ -1,7 +1,7 @@
 """Forecast detail tab: the model-diagnostic charts, off the main view.
 
 These four series say how the forecaster is behaving, not whether households
-saved money, so by the rule in dashboard/CLAUDE.md they do not belong beside
+saved money, so by the rule in dashboard/AGENTS.md they do not belong beside
 the headline claims. They stay because they are how the forecasting module is
 debugged — just one tab away from the narrative.
 """

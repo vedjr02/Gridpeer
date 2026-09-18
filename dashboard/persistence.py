@@ -1,6 +1,6 @@
 """SQLite persistence for a pipeline run: one table per shared model, keyed by run_id.
 
-Build-order step 2 (see dashboard/CLAUDE.md). This exists so the dashboard can be
+Build-order step 2 (see dashboard/AGENTS.md). This exists so the dashboard can be
 re-opened without re-running the simulation, and so two runs — baseline versus a
 learned policy — can be compared after the fact instead of side by side in memory.
 It is deliberately a thin store, not an ORM: every row is a shared contract in,

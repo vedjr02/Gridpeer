@@ -1,6 +1,6 @@
 """Household environment: what each household actually has to trade this tick.
 
-Build-order step 2/3 (see simulation/CLAUDE.md). Turns a ``HouseholdProfile`` plus
+Build-order step 2/3 (see simulation/AGENTS.md). Turns a ``HouseholdProfile`` plus
 its demand and solar time series into per-tick state — demand, generation, battery
 level, and the net position left over once the battery has absorbed what it can.
 

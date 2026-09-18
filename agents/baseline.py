@@ -1,6 +1,6 @@
 """Rule-based baseline trader: the yardstick every RL result is measured against.
 
-Build-order step 1 (see agents/CLAUDE.md), and explicitly not a throwaway. Every
+Build-order step 1 (see agents/AGENTS.md), and explicitly not a throwaway. Every
 claim this project makes has the shape "the learned policy beat *this* by X%", so
 the baseline has to be reasonable enough that beating it means something, and
 simple enough that nobody has to wonder why it did what it did.

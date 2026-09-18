@@ -49,7 +49,7 @@ gridpeer/
 ├── dashboard/        # Orchestration loop + live dashboard
 ├── data/             # Dataset access instructions + synthetic data fallback
 ├── tests/            # Cross-module contract tests
-├── CLAUDE.md          # Root context for AI coding assistants
+├── AGENTS.md          # Root context for AI coding assistants
 ├── ROADMAP.md         # Week-by-week build plan with owners
 └── CONTRIBUTING.md    # Branching, commit, and schema-change rules
 ```
@@ -74,10 +74,16 @@ git clone https://github.com/<your-org-or-username>/gridpeer.git
 cd gridpeer
 make setup      # creates venv, installs deps
 make test       # runs the contract tests — should pass on a fresh clone
-make run-sim    # runs the simulation with placeholder agents (once implemented)
+make run-sim    # runs the pipeline end to end and persists a run to data/gridpeer.db
+make ai-context # optional: local CLAUDE.md symlinks, if you use Claude Code
 ```
 
-See `CLAUDE.md` for how AI coding assistants should work in this repo, and `ROADMAP.md` for the week-by-week plan.
+See `AGENTS.md` for how AI coding assistants should work in this repo, and `ROADMAP.md` for the week-by-week plan.
+
+The per-module context lives in `AGENTS.md` files, which most coding assistants read
+directly. Claude Code reads `CLAUDE.md` only, so `make ai-context` symlinks
+`CLAUDE.md -> AGENTS.md` in each module. Those symlinks are gitignored — the
+committed context files are the `AGENTS.md` ones.
 
 ## Team
 

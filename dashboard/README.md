@@ -2,7 +2,7 @@
 
 Owner: _TBD_
 
-Orchestration loop + live outcomes dashboard. See `CLAUDE.md` in this folder for build guidance.
+Orchestration loop + live outcomes dashboard. See `AGENTS.md` in this folder for build guidance.
 
 ## Status
 

@@ -1,7 +1,7 @@
 """Grid-baseline fallback: what a tick actually cost each household, and what it
 would have cost with no marketplace at all.
 
-Build-order step 3/3 (see simulation/CLAUDE.md). Orders the market could not match
+Build-order step 3/3 (see simulation/AGENTS.md). Orders the market could not match
 do not vanish — the household still needs the energy, or still has the surplus. It
 falls back to the grid at the tariffs on its own ``HouseholdProfile``: unmatched
 buys are imported at the import tariff, unmatched sells are exported at the export
@@ -26,7 +26,7 @@ revenue. Savings are ``grid_only - p2p``: positive means the marketplace left th
 household better off.
 
 This module deliberately stops at the per-tick figures. ``HouseholdOutcome`` and
-``RunSummary`` are the dashboard's to build (see dashboard/CLAUDE.md) — it sums
+``RunSummary`` are the dashboard's to build (see dashboard/AGENTS.md) — it sums
 these across a run. Everything it needs is already here or on the shared contracts,
 so no schema change is required to produce them.
 """

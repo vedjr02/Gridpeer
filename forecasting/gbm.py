@@ -1,6 +1,6 @@
 """LightGBM demand forecaster, behind the same ForecastOutput contract as the baseline.
 
-Build-order step 2 (see `forecasting/CLAUDE.md`): gradient boosting on lag and
+Build-order step 2 (see `forecasting/AGENTS.md`): gradient boosting on lag and
 calendar features, which at CER data volumes (half-hourly, per household) beats a
 neural net and trains in seconds. Solar is deliberately *not* boosted — generation
 is near-deterministic given time of day and panel capacity, so it uses a

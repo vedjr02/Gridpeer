@@ -1,6 +1,6 @@
 """Continuous double auction: turn a tick's orders into cleared trades.
 
-Build-order step 1/3 (see simulation/CLAUDE.md). This module owns the market
+Build-order step 1/3 (see simulation/AGENTS.md). This module owns the market
 mechanism and nothing else — it does not decide what any household bids, it only
 clears whatever orders it is given, and it never reaches into another module's
 internals. The only things crossing this boundary are shared contracts:

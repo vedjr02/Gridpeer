@@ -1,6 +1,6 @@
-# CLAUDE.md — agents/
+# AGENTS.md — agents/
 
-Read the root `CLAUDE.md` first — this file only covers what's specific to this module.
+Read the root `AGENTS.md` first — this file only covers what's specific to this module.
 
 ## Scope
 

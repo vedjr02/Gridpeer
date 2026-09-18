@@ -1,6 +1,6 @@
 """Evaluation harness: run a strategy end to end and report what it achieved.
 
-agents/CLAUDE.md calls this the module's most important deliverable — more than
+agents/AGENTS.md calls this the module's most important deliverable — more than
 the RL training itself — and says to build it early rather than improvise it under
 deadline pressure. It is the thing that turns a simulation into the project's
 single defensible sentence: *these agents saved households X% versus exporting to
@@ -22,7 +22,7 @@ rather than a unilateral one, and both flagged in the module README:
    the forecaster predicts raw demand and solar, so today nothing owns that choice.
    Until it is settled, storage sits idle and the savings reported here are the
    no-storage floor.
-2. **RunSummary is also listed as a dashboard output** in dashboard/CLAUDE.md. The
+2. **RunSummary is also listed as a dashboard output** in dashboard/AGENTS.md. The
    rollup is computed here because a sibling import would break the module
    boundary, but the arithmetic should live in one place before two versions drift.
 """
@@ -225,7 +225,7 @@ def _outcome(
 def compare(baseline: RunSummary, candidate: RunSummary) -> str:
     """One line of plain English comparing two runs — the demo's closing sentence.
 
-    Reports the honest direction either way: agents/CLAUDE.md is explicit that a
+    Reports the honest direction either way: agents/AGENTS.md is explicit that a
     learned policy failing to beat the baseline is a legitimate result, and a
     harness that could only phrase a win would quietly encourage hiding a loss.
     """
