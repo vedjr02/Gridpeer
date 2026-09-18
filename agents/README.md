@@ -28,6 +28,18 @@ large surplus is worth conceding margin for rather than dumping to the grid. Bot
 sides using this rule always produce a crossing book; a baseline that rarely traded
 would flatter every RL result measured against it.
 
+## Settled at the meter, not at the order
+
+Every tick's cost and grid load come from what each household actually generated and
+consumed; the difference between that and what it traded is bought or sold at its own
+grid tariffs. A strategy that offers energy it does not have pays for the shortfall
+instead of booking it as a saving — the first thing an RL policy would otherwise learn.
+
+**Known artifact:** the forecaster has no history at tick 0, so nobody offers a sale in
+it. Because peak-load reduction is a worst-tick measure, a run whose demand is flat
+reports 0% reduction on the strength of that one untradeable tick. Warming the
+forecaster on history before the measured run is the fix; it is not done yet.
+
 ## Two open questions for the team
 
 **Batteries take no part in a run yet.** Households trade their forecast net position
