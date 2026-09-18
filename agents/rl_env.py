@@ -15,17 +15,49 @@ it will be judged on.
   a trained policy deploys into ``dashboard.run_pipeline`` unchanged. Battery level
   is *not* observed — no shared contract carries it yet (see the open
   ``schema-change`` proposal) — which is why training defaults to batteries off.
-- *Action*: two numbers in [-1, 1]. The first sets how much of the forecast position
-  to offer (0-100%); the second sets eagerness, how far into the household's own
-  tariff gap it concedes on price. The side is fixed by the sign of the forecast, as
-  for the baseline: offering to sell while expecting a deficit is never sensible.
-- *Reward*: the tick's savings versus the grid-only counterfactual, settled against
-  the **meter**, not the order. Selling energy the household never had is bought
-  back at the import tariff, so over-offering is punished rather than paid.
+- *Action*: one number in [-1, 1] that scales the offered quantity from 0% to 200%
+  of the forecast position — a **correction to the rule-based baseline**, whose
+  order is exactly the zero action (residual RL). Above 100% because the naive
+  forecast lags the sun and under-predicts morning surplus. Price is *not* an
+  action: every order is priced by the baseline's rule. The side is fixed by the
+  sign of the forecast, as for the baseline.
+- *Reward*: savings versus the grid-only counterfactual, settled against the
+  **meter**, not the order — selling energy a household never had is bought back at
+  the import tariff. By default (``reward_mode="mixed"``) each agent gets half its
+  own savings plus half an equal share of the community's: the community share
+  gives every household a stable collective signal, and the own share makes each
+  household bear the cost of its own over-offering. ``"community"`` and
+  ``"individual"`` are kept for comparison.
 
-The rule-based baseline lies inside this action space (full quantity, its own
-eagerness), so a policy can always recover it — anything it learns is on top of
-the yardstick, not instead of it.
+**Why quantity only** — measured on held-out data, not assumed:
+
+1. Any *fixed* quantity/eagerness pair is at least 22% worse than the baseline: its
+   size-dependent eagerness routes trades through households with the largest,
+   most reliable positions. Starting a policy *at* the baseline (residual) spends
+   training on the real headroom — forecast error, worth up to +56% against a
+   perfect-foresight ceiling — instead of on rediscovering the yardstick.
+2. With a price action and **individual** reward, the shared policy learned to offer
+   200% of its forecast at the greediest price allowed. The auction splits each
+   trade's surplus between buyer and seller, so every agent gained by claiming more
+   of it; once all did, asks stopped meeting bids and trading collapsed (-88%).
+3. With a price action and **community** reward, total savings rose (+9% mean over
+   five seeds) — by moving the pure consumer's share to the sellers. Its savings
+   fell from EUR 6.87 to EUR 0.69 over 20 unseen runs. A marketplace a consumer
+   loses from is one it leaves.
+
+Pricing only moves savings between neighbours; only volume creates them. So the
+policy controls volume, and price stays with the baseline's even-split rule.
+
+**Why a mixed reward.** Quantity has the same trap in milder form. In a midday
+glut, over-buying lets more of a buyer's real deficit get matched; the excess is
+re-exported at the export tariff, a loss for the buyer exactly equal to the seller's
+gain. Community-neutral, so a **community** reward learned to offer 200% everywhere:
++11% total, stable — paid for by the pure consumer, down EUR 1.66 over 20 unseen
+runs. **Individual** reward makes each household bear its own excess and found
++12% with nobody worse off on some seeds, but was unstable (-0.2% to +12.4%). The
+50/50 mix trained stably positive on every seed (+6.9% to +12.7%) with the worst
+household moving by at most EUR 0.17 over 20 runs. agents/train_rl.py picks among
+seeds on a validation set, fairness first.
 """
 
 from __future__ import annotations
@@ -37,13 +69,13 @@ import numpy as np
 from gymnasium import spaces
 from pettingzoo import ParallelEnv
 
-from agents.baseline import MIN_TRADEABLE_KWH
+from agents.baseline import MIN_TRADEABLE_KWH, RuleBasedTrader
 from forecasting.baseline import NaiveForecaster
 from shared.schemas import AgentDecision, ForecastOutput, HouseholdProfile, OrderSide
 from simulation.simulator import HouseholdSeries, MarketSimulator, TickResult, timestamp_for
 
 OBSERVATION_SIZE = 8
-ACTION_SIZE = 2
+ACTION_SIZE = 1
 
 # kWh per half-hour tick rarely exceeds ~2 for a residential household; clipping at
 # five keeps a freak reading from dominating the network's input scale.
@@ -53,6 +85,8 @@ _TARIFF_SCALE_EUR_PER_KWH = 0.35
 # Rewards in cents rather than euros: per-tick savings are fractions of a cent, and
 # PPO's value function trains poorly on targets that small.
 REWARD_SCALE = 100.0
+# The baseline whose price rule every order uses. Stateless, so one shared instance.
+_BASELINE = RuleBasedTrader()
 
 
 def build_observation(forecast: ForecastOutput, profile: HouseholdProfile) -> np.ndarray:
@@ -86,34 +120,27 @@ def decision_from_action(
 ) -> AgentDecision | None:
     """Turn a policy's raw action into an order, or None to sit the tick out.
 
-    ``action[0]`` in [-1, 1] maps to the share of the forecast position offered,
-    0-100%. ``action[1]`` maps to eagerness in [0, 1]: 0 prices at the greedy end
-    of the household's tariff gap, 1 at the grid-equivalent end. Out-of-range values
-    are clipped, never rejected — PPO's Gaussian policy samples outside the box.
+    ``action[0]`` in [-1, 1] scales the quantity to 0-200% of the forecast position;
+    ``[0]`` reproduces the baseline's order exactly. The price is the baseline's,
+    computed from the *forecast* position, so offering more never buys priority in
+    the book. Out-of-range actions are clipped, never rejected — PPO's Gaussian
+    policy samples outside the box.
     """
     net_kwh = forecast.predicted_net_position_kwh
-    share = (float(np.clip(action[0], -1.0, 1.0)) + 1.0) / 2.0
-    eagerness = (float(np.clip(action[1], -1.0, 1.0)) + 1.0) / 2.0
-
-    quantity_kwh = abs(net_kwh) * share
+    scale = 1.0 + float(np.clip(action[0], -1.0, 1.0))
+    quantity_kwh = abs(net_kwh) * scale
     if quantity_kwh < MIN_TRADEABLE_KWH:
         return None
 
-    floor = profile.grid_export_tariff_eur_per_kwh
-    ceiling = profile.grid_import_tariff_eur_per_kwh
-    gap = max(0.0, ceiling - floor)
     side = OrderSide.SELL if net_kwh > 0 else OrderSide.BUY
-    limit_price = (
-        floor + (1.0 - eagerness) * gap
-        if side is OrderSide.SELL
-        else ceiling - (1.0 - eagerness) * gap
-    )
     return AgentDecision(
         household_id=forecast.household_id,
         tick=forecast.tick,
         side=side,
         quantity_kwh=quantity_kwh,
-        limit_price_eur_per_kwh=limit_price,
+        limit_price_eur_per_kwh=_BASELINE._limit_price_eur_per_kwh(
+            profile, side, abs(net_kwh)
+        ),
         strategy_name=strategy_name,
     )
 
@@ -154,6 +181,8 @@ class GridPeerParallelEnv(ParallelEnv):
         use_battery: bool = False,
         forecast_window: int = 4,
         strategy_name: str = "rl_policy",
+        reward_mode: str = "mixed",
+        own_weight: float = 0.5,
     ) -> None:
         """households: the community and its full series (all the same length).
 
@@ -171,6 +200,14 @@ class GridPeerParallelEnv(ParallelEnv):
                 f"episode_ticks must be in 1..{series_ticks} (got {self.episode_ticks})"
             )
         self._series_ticks = series_ticks
+        if reward_mode not in ("community", "individual", "mixed"):
+            raise ValueError(
+                f"reward_mode must be 'community', 'individual' or 'mixed' (got {reward_mode})"
+            )
+        if not 0.0 <= own_weight <= 1.0:
+            raise ValueError(f"own_weight must be in [0, 1] (got {own_weight})")
+        self.reward_mode = reward_mode
+        self.own_weight = own_weight
         self.random_start = random_start
         self.use_battery = use_battery
         self.strategy_name = strategy_name
@@ -197,7 +234,7 @@ class GridPeerParallelEnv(ParallelEnv):
         return self._observation_space
 
     def action_space(self, agent: str) -> spaces.Space:
-        """Every household chooses a (share, eagerness) pair in [-1, 1]."""
+        """Every household chooses one quantity correction in [-1, 1]."""
         return self._action_space
 
     def reset(
@@ -276,13 +313,29 @@ class GridPeerParallelEnv(ParallelEnv):
         result = self._simulator.step(orders)
         self.last_tick = result
 
-        rewards = {
-            agent: float(result.settlements[agent].savings_eur * REWARD_SCALE)
-            if agent in result.settlements
-            else 0.0
+        own_savings_eur = {
+            agent: result.settlements[agent].savings_eur if agent in result.settlements else 0.0
             for agent in self.agents
         }
-        infos = {agent: {"savings_eur": rewards[agent] / REWARD_SCALE} for agent in self.agents}
+        community_eur = sum(own_savings_eur.values())
+        if self.reward_mode == "community":
+            rewards = dict.fromkeys(self.agents, community_eur * REWARD_SCALE)
+        elif self.reward_mode == "individual":
+            rewards = {agent: own * REWARD_SCALE for agent, own in own_savings_eur.items()}
+        else:
+            # Own savings plus an equal share of the community's: the share keeps the
+            # collective signal, the own term makes each household bear its own
+            # over-offering instead of passing it to a neighbour.
+            share_eur = community_eur / len(self.agents)
+            rewards = {
+                agent: (self.own_weight * own + (1.0 - self.own_weight) * share_eur)
+                * REWARD_SCALE
+                for agent, own in own_savings_eur.items()
+            }
+        # Each household's own savings, whatever it was rewarded on: summing these over
+        # agents always gives the community total, so episode accounting never
+        # double-counts a shared reward.
+        infos = {agent: {"savings_eur": own_savings_eur[agent]} for agent in self.agents}
 
         done = self._simulator.tick >= self._simulator.num_ticks
         if done:
