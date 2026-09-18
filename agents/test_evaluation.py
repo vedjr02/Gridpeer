@@ -4,7 +4,7 @@ import pytest
 
 from agents.baseline import STRATEGY_NAME, RuleBasedTrader
 from agents.evaluation import HouseholdSeries, compare, run_strategy
-from shared.schemas import AgentRole, HouseholdProfile, RunSummary
+from shared.schemas import AgentDecision, AgentRole, HouseholdProfile, OrderSide, RunSummary
 
 
 def profile(
@@ -61,8 +61,21 @@ def test_a_complementary_pair_saves_both_households_money():
 
 
 def test_trading_reduces_peak_grid_import():
-    """Energy sourced from a neighbour is energy the grid did not have to carry."""
-    result = run_baseline(complementary_households())
+    """Energy sourced from a neighbour is energy the grid did not have to carry.
+
+    The consumer's demand is low in the first half hour and peaks afterwards, which
+    is what a real load curve does — and it keeps the measurement off the
+    forecaster's cold-start tick, where nobody can trade (see
+    test_peak_reduction_is_zero_when_the_worst_tick_could_not_trade).
+    """
+    producer, consumer = complementary_households()
+    quiet_first_tick = HouseholdSeries(
+        profile=consumer.profile,
+        demand_kwh=[0.1, *consumer.demand_kwh[1:]],
+        solar_kwh=consumer.solar_kwh,
+    )
+
+    result = run_baseline([producer, quiet_first_tick])
 
     assert result.summary.peak_load_reduction_pct > 0
     assert result.summary.co2_avoided_kg > 0
@@ -124,6 +137,65 @@ def test_num_ticks_caps_the_run():
 def test_running_with_no_households_is_an_error():
     with pytest.raises(ValueError, match="no households"):
         run_strategy([], RuleBasedTrader(), run_id="r", strategy_name="s")
+
+
+class _FiftyKwhTrader:
+    """Trades 50 kWh a tick regardless of what the household actually has.
+
+    Stands in for the failure mode a learned policy finds on its own: if the harness
+    settled on orders, this would be the highest-scoring strategy in the project,
+    because both sides would book the full 50 kWh against their grid tariffs.
+    """
+
+    def decide(self, forecast, profile):
+        selling = profile.has_solar
+        return AgentDecision(
+            household_id=forecast.household_id,
+            tick=forecast.tick,
+            side=OrderSide.SELL if selling else OrderSide.BUY,
+            quantity_kwh=50.0,
+            limit_price_eur_per_kwh=(
+                profile.grid_export_tariff_eur_per_kwh
+                if selling
+                else profile.grid_import_tariff_eur_per_kwh
+            ),
+            strategy_name="fifty_kwh",
+        )
+
+
+def test_trading_energy_the_households_do_not_have_never_pays():
+    """Settled at the meter, phantom volume costs money instead of earning savings.
+
+    The pair clears 50 kWh although only 2.0 kWh exists: the seller buys back the
+    48 kWh it never generated at the import tariff, and the buyer dumps the 48 kWh
+    it never needed at the export tariff. Both end up worse off than the grid.
+    """
+    result = run_strategy(
+        complementary_households(),
+        _FiftyKwhTrader(),
+        run_id="fifty_kwh",
+        strategy_name="fifty_kwh",
+    )
+
+    assert result.summary.total_savings_eur < 0
+    assert all(outcome.savings_eur < 0 for outcome in result.outcomes)
+
+
+def test_peak_reduction_is_zero_when_the_worst_tick_could_not_trade():
+    """Peak load is a worst-tick measure, and tick 0 is a tick nobody can trade in.
+
+    The forecaster has no history at tick 0, so every household forecasts the same
+    flat fallback and no sale is offered. With demand flat across the run, that
+    untradeable tick *is* the community's worst tick, so the honest peak reduction is
+    zero — measured from orders instead, tick 0 looks free because no order was
+    matched, and the number would overstate what the marketplace achieved.
+
+    Fixing the cold start (warming the forecaster on history before the measured run)
+    is tracked separately; this test pins the current, honest behaviour.
+    """
+    result = run_baseline(complementary_households())
+
+    assert result.summary.peak_load_reduction_pct == pytest.approx(0.0)
 
 
 def test_compare_reports_a_loss_as_plainly_as_a_win():
