@@ -21,7 +21,14 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.1.0"
+SCHEMA_VERSION = "0.2.0"
+# 0.2.0 (additive, nothing renamed or removed): HouseholdState, and
+# AgentDecision.battery_offset_kwh — agents can see and adjust the household battery.
+# Approved by all four via the "[schema-change] Let agents see and control the
+# household battery" issue. Part B ships as an *offset* to the automatic battery,
+# not the proposed target setpoint: measured on unseen data, the same trained policy
+# sent as a setpoint fell from +11.2% to -8.5% against the automatic battery,
+# because a setpoint stops the battery absorbing forecast error. See the PR.
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +118,41 @@ class AgentDecision(BaseModel):
         description="For a SELL: minimum acceptable price. For a BUY: maximum acceptable price.",
     )
     strategy_name: str = Field(description="e.g. 'rule_based_baseline', 'ppo_v1' — for evaluation breakdowns")
+    battery_offset_kwh: float = Field(
+        default=0.0,
+        description="Adjustment to the automatic battery this tick, kWh. 0 = automatic "
+        "(charge from surplus, discharge into deficit). Positive discharges extra, e.g. "
+        "stored energy to sell; negative holds charge back. Capped by capacity and "
+        "power by simulation/.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Simulation -> Agents (battery state)
+# ---------------------------------------------------------------------------
+
+class HouseholdState(BaseModel):
+    """A household's battery state at the start of a tick — what it can know before trading.
+
+    Produced by: simulation/ (the household environment), passed on by dashboard/
+    Consumed by: agents/ (to plan an order around the battery)
+    """
+
+    household_id: str
+    tick: int = Field(ge=0, description="The tick about to be traded")
+    timestamp: datetime
+    battery_level_kwh: float = Field(ge=0, description="Charge at the start of the tick, kWh")
+    battery_capacity_kwh: float = Field(ge=0, description="Usable capacity, kWh")
+    battery_max_power_kw: float | None = Field(
+        default=None,
+        ge=0,
+        description="Charge/discharge power limit, kW; None = unlimited",
+    )
+    metered_net_position_kwh: float | None = Field(
+        default=None,
+        description="What the meter recorded last tick (+ exported, - imported); "
+        "None before the first tick",
+    )
 
 
 # ---------------------------------------------------------------------------

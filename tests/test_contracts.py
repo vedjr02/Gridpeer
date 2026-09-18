@@ -232,3 +232,66 @@ def test_contracts_survive_the_database_round_trip(pipeline_run):
         assert store.load_run_summary(run_id) == pipeline_run.summary
         assert len(store.load_forecasts(run_id)) == len(pipeline_run.forecasts)
         assert len(store.load_decisions(run_id)) == len(pipeline_run.decisions)
+
+
+def test_schema_version_is_0_2_0():
+    from shared.schemas import SCHEMA_VERSION
+
+    assert SCHEMA_VERSION == "0.2.0"
+
+
+def test_household_state_roundtrip_and_defaults():
+    from shared.schemas import HouseholdState
+
+    state = HouseholdState(
+        household_id="hh_001",
+        tick=3,
+        timestamp=datetime(2026, 1, 1, 1, 30),
+        battery_level_kwh=2.5,
+        battery_capacity_kwh=5.0,
+        battery_max_power_kw=2.5,
+        metered_net_position_kwh=-0.4,
+    )
+    assert state.model_validate(state.model_dump()) == state
+
+    minimal = HouseholdState(
+        household_id="hh_001",
+        tick=0,
+        timestamp=datetime(2026, 1, 1),
+        battery_level_kwh=0.0,
+        battery_capacity_kwh=5.0,
+    )
+    assert minimal.battery_max_power_kw is None  # unlimited
+    assert minimal.metered_net_position_kwh is None  # nothing metered before tick 0
+
+
+def test_household_state_rejects_negative_charge():
+    import pytest
+    from pydantic import ValidationError
+
+    from shared.schemas import HouseholdState
+
+    with pytest.raises(ValidationError):
+        HouseholdState(
+            household_id="hh_001",
+            tick=0,
+            timestamp=datetime(2026, 1, 1),
+            battery_level_kwh=-1.0,
+            battery_capacity_kwh=5.0,
+        )
+
+
+def test_agent_decision_battery_offset_is_additive():
+    """0.1.0-style decisions stay valid, and default to the automatic battery."""
+    legacy = AgentDecision(
+        household_id="hh_001",
+        tick=1,
+        side=OrderSide.SELL,
+        quantity_kwh=1.0,
+        limit_price_eur_per_kwh=0.15,
+        strategy_name="rule_based_baseline",
+    )
+    assert legacy.battery_offset_kwh == 0.0
+
+    adjusted = legacy.model_copy(update={"battery_offset_kwh": 1.25})
+    assert AgentDecision.model_validate(adjusted.model_dump()) == adjusted
