@@ -1,6 +1,6 @@
 """Naive baseline forecaster: rolling-average demand + solar prediction.
 
-Build-order step 1 (see forecasting/CLAUDE.md): the boring sanity-check model
+Build-order step 1 (see forecasting/AGENTS.md): the boring sanity-check model
 that stays in the codebase as a fallback once smarter models (LightGBM/Prophet)
 arrive behind the same ForecastOutput contract. It predicts the next tick as the
 mean of the most recent observations, falling back to a flat value when no

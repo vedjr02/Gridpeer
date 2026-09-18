@@ -2,7 +2,7 @@
 
 Owner: Amogh Gaikwad (@ag2502)
 
-Baseline + RL trading strategies. See `CLAUDE.md` in this folder for build guidance.
+Baseline + RL trading strategies. See `AGENTS.md` in this folder for build guidance.
 
 ## Status
 
@@ -37,8 +37,8 @@ physics or something the agent controls: the forecaster predicts raw demand and 
 so right now nothing owns that choice. Today's savings figures are the no-storage
 floor, and this is the likeliest single source of improvement in them.
 
-**`RunSummary` is claimed by two modules.** `agents/CLAUDE.md` says this harness
-produces it; `dashboard/CLAUDE.md` says the dashboard does. It is computed here
+**`RunSummary` is claimed by two modules.** `agents/AGENTS.md` says this harness
+produces it; `dashboard/AGENTS.md` says the dashboard does. It is computed here
 because importing the dashboard would break the module boundary, but the arithmetic
 should live in one place before two versions drift apart.
 

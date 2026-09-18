@@ -1,6 +1,6 @@
 """Run rollups: per-tick settlement figures summed into the numbers the demo quotes.
 
-dashboard/CLAUDE.md names ``HouseholdOutcome`` and ``RunSummary`` as this module's
+dashboard/AGENTS.md names ``HouseholdOutcome`` and ``RunSummary`` as this module's
 outputs, and the narrative it has to support is one sentence: *households using this
 marketplace saved X% versus just exporting to the grid, and the learned agents beat
 the rule-based ones by Y%.* Everything here exists to make that sentence defensible.

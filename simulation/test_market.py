@@ -1,6 +1,6 @@
 """Tests for the continuous double auction.
 
-The two-household case below is the hand-calculated sanity check simulation/CLAUDE.md
+The two-household case below is the hand-calculated sanity check simulation/AGENTS.md
 asks for: it stays in the suite permanently, and if it ever breaks, something
 fundamental about the mechanism changed.
 """
@@ -225,7 +225,7 @@ def test_unmatched_orders_come_back_in_arrival_order():
 def test_clearing_is_deterministic_for_the_same_book():
     """Same orders in, byte-identical market state out — twice.
 
-    Reproducibility is a hard requirement from simulation/CLAUDE.md: the agents
+    Reproducibility is a hard requirement from simulation/AGENTS.md: the agents
     module needs to replay a specific tick to debug a policy.
     """
     book = [

@@ -2,7 +2,7 @@
 
 Owner: Amogh Gaikwad (@ag2502)
 
-Market clearing mechanism (continuous double auction) + household environment. See `CLAUDE.md` in this folder for build guidance, and the root `README.md` for how this fits the overall architecture.
+Market clearing mechanism (continuous double auction) + household environment. See `AGENTS.md` in this folder for build guidance, and the root `README.md` for how this fits the overall architecture.
 
 ## Status
 

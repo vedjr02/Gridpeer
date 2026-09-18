@@ -1,4 +1,4 @@
-.PHONY: setup lint test run-sim clean
+.PHONY: setup lint test run-sim ai-context clean
 
 # Override on any machine that doesn't have 3.12: `make setup PYTHON=python3.11`
 PYTHON ?= python3.12
@@ -16,6 +16,12 @@ test:
 
 run-sim:
 	. .venv/bin/activate && python -m dashboard.orchestrator
+
+ai-context:
+	@for dir in . agents dashboard forecasting simulation; do \
+		ln -sf AGENTS.md $$dir/CLAUDE.md; \
+	done
+	@echo "Linked CLAUDE.md -> AGENTS.md (gitignored; Claude Code reads CLAUDE.md only)"
 
 clean:
 	rm -rf .venv .pytest_cache .ruff_cache **/__pycache__

@@ -9,7 +9,7 @@ Two halves, in this order:
 2. **The pipeline speaks them.** One real end-to-end run supplies every object under
    test, and each stage's output is validated against the model the next stage
    consumes. Nothing is hand-typed from one stage into the next — that is the
-   week-1 definition of "done" in the root CLAUDE.md, and this is where it is
+   week-1 definition of "done" in the root AGENTS.md, and this is where it is
    actually checked rather than assumed.
 
 Individual modules still test their own logic in their own test files; this file
@@ -125,7 +125,7 @@ def test_household_outcome_and_run_summary():
 # consumes, what agents/ emits is what simulation/ clears, and what simulation/
 # emits is what the dashboard rolls up. Nothing here is hand-typed from one stage
 # into the next; a single real run supplies every object under test, which is the
-# week-1 definition of "done" in the root CLAUDE.md.
+# week-1 definition of "done" in the root AGENTS.md.
 # ---------------------------------------------------------------------------
 
 

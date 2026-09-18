@@ -40,3 +40,7 @@ Thumbs.db
 
 # Local run databases (regenerate with `make run-sim`)
 data/*.db
+
+# Local Claude Code symlinks to the AGENTS.md context files (`make ai-context`)
+CLAUDE.md
+*/CLAUDE.md

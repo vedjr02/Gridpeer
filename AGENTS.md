@@ -1,4 +1,4 @@
-# CLAUDE.md — Root Context
+# AGENTS.md — Root Context
 
 This file is read by every Claude Code session working in this repo, regardless of which of the four of you is running it. Keep it accurate — if the architecture changes, update this file in the same PR.
 
@@ -26,7 +26,7 @@ If you (the AI assistant) are working inside `simulation/`, `agents/`, `forecast
 - Units are always explicit in variable/field names or docstrings (kWh, €/kWh, kW). Energy trading bugs are usually unit bugs.
 - Commit messages follow Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`) — see `CONTRIBUTING.md`.
 
-## Module boundaries (read the module's own CLAUDE.md for detail)
+## Module boundaries (read the module's own AGENTS.md for detail)
 
 - `simulation/` — market clearing mechanism + household environment. Consumes `AgentDecision`, produces `TradeEvent` and `MarketState`.
 - `agents/` — trading strategies (baseline + RL). Consumes `ForecastOutput` and `MarketState`, produces `AgentDecision`.

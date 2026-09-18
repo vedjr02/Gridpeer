@@ -2,7 +2,7 @@
 
 Owner: _TBD_
 
-Per-household demand + solar generation forecasting. See `CLAUDE.md` in this folder for build guidance.
+Per-household demand + solar generation forecasting. See `AGENTS.md` in this folder for build guidance.
 
 ## Status
 
