@@ -1,82 +1,86 @@
-"""GridPeer dashboard (Streamlit) — live view of the forecasting stage.
+"""GridPeer dashboard (Streamlit) — the outcomes narrative.
 
-Week-1 scope: prove real data flows through real contracts. This renders the
-ForecastOutput stream the orchestrator produces — predicted demand, solar, and
-net position per household over time. The outcomes narrative (savings, CO2,
-peak-load; HouseholdOutcome / RunSummary) arrives once agents/ and simulation/
-feed trades into the loop.
+This app exists to defend two claims, in this order:
+
+    1. Households trading peer-to-peer saved X% versus just exporting to the grid.
+    2. RL agents beat the rule-based baseline by Y%.
+
+The Outcomes tab carries claim 1, Strategy comparison carries claim 2, and
+anything supporting neither — forecast diagnostics, raw frames — lives in
+Forecast detail. Every number on screen was persisted by a run; this module
+only picks a run and routes to a view.
 
 Run:  streamlit run dashboard/app.py
+Point at a different database with GRIDPEER_DB=path/to/run.db
 """
 
 from __future__ import annotations
 
-import pandas as pd
 import streamlit as st
 
-from dashboard.orchestrator import demo_households, run_forecasts
-from shared.schemas import ForecastOutput
-
-
-def _to_frame(stream: list[ForecastOutput]) -> pd.DataFrame:
-    """Flatten the ForecastOutput stream into a tidy DataFrame for charting."""
-    return pd.DataFrame(
-        {
-            "tick": f.tick,
-            "household_id": f.household_id,
-            "predicted_demand_kwh": f.predicted_demand_kwh,
-            "predicted_solar_generation_kwh": f.predicted_solar_generation_kwh,
-            "predicted_net_position_kwh": f.predicted_net_position_kwh,
-            "confidence": f.confidence,
-        }
-        for f in stream
-    )
-
-
-def _pivot(frame: pd.DataFrame, value: str) -> pd.DataFrame:
-    """Wide frame indexed by tick, one column per household, for st.line_chart."""
-    return frame.pivot(index="tick", columns="household_id", values=value)
+from dashboard.views import comparison, data, forecast_detail, overview, theme
+from shared.schemas import RunSummary
 
 
 def main() -> None:
+    """Render the sidebar run selector and the three dashboard tabs."""
     st.set_page_config(page_title="GridPeer", page_icon="⚡", layout="wide")
-    st.title("⚡ GridPeer — forecasting pipeline")
-    st.caption(
-        "Real ForecastOutput contracts flowing from forecasting/ through the "
-        "orchestrator. Trades, savings and CO2 land once agents/ + simulation/ wire in."
+    st.title("⚡ GridPeer — peer-to-peer energy trading outcomes")
+
+    store, is_fixture = data.open_store()
+    summaries = data.list_summaries(store)
+    selected = _run_selector(summaries, is_fixture)
+
+    outcomes_tab, comparison_tab, forecast_tab = st.tabs(
+        ["Outcomes", "Strategy comparison", "Forecast detail"]
     )
+    run = None if selected is None else data.load_run(store, selected)
 
+    with outcomes_tab:
+        if run is None:
+            st.info(
+                "No summarised runs in this database yet. Run the orchestrator with a "
+                "`db_path` to persist one, then reload this page."
+            )
+        else:
+            overview.render(run)
+    with comparison_tab:
+        comparison.render(summaries)
+    with forecast_tab:
+        if run is None:
+            st.info("Select a run to see its forecast stream.")
+        else:
+            forecast_detail.render(
+                run.forecasts, theme.HouseholdPalette.for_run(run.household_ids)
+            )
+
+
+def _run_selector(summaries: list[RunSummary], is_fixture: bool) -> RunSummary | None:
+    """Sidebar picker over persisted runs; None when nothing is stored yet."""
     with st.sidebar:
-        st.header("Controls")
-        num_households = st.slider("Households", 1, 4, 4)
-        days = st.slider("Days of series", 1, 3, 2)
-        window = st.slider("Forecaster window (ticks)", 1, 8, 4)
-        st.caption("Naive baseline: rolling average over the last *window* half-hour ticks.")
+        st.header("Run")
+        if is_fixture:
+            st.warning(
+                "Showing stand-in data — dashboard/persistence.py is not importable, "
+                "so these numbers are shaped like real ones but mean nothing.",
+                icon="⚠️",
+            )
+        if not summaries:
+            st.caption(f"No runs found in `{data.DB_PATH}`.")
+            return None
 
-    households = demo_households(num_households=num_households, days=days)
-    stream = run_forecasts(households, window=window)
-    frame = _to_frame(stream)
-
-    ticks = frame["tick"].nunique()
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Households", num_households)
-    col2.metric("Ticks (half-hourly)", ticks)
-    col3.metric("ForecastOutput emitted", len(stream))
-
-    st.subheader("Predicted demand (kWh)")
-    st.line_chart(_pivot(frame, "predicted_demand_kwh"))
-
-    st.subheader("Predicted solar generation (kWh)")
-    st.line_chart(_pivot(frame, "predicted_solar_generation_kwh"))
-
-    st.subheader("Predicted net position (kWh)  —  + surplus (can sell) / − deficit (needs to buy)")
-    st.line_chart(_pivot(frame, "predicted_net_position_kwh"))
-
-    st.subheader("Forecast confidence")
-    st.line_chart(_pivot(frame, "confidence"))
-
-    with st.expander("Raw ForecastOutput stream"):
-        st.dataframe(frame, use_container_width=True)
+        by_id = {s.run_id: s for s in summaries}
+        run_id = st.selectbox(
+            "Select a run",
+            list(by_id),
+            format_func=lambda r: f"{by_id[r].strategy_name} · {r}",
+        )
+        selected = by_id[run_id]
+        st.caption(
+            f"Strategy: **{selected.strategy_name}**  \n"
+            f"{selected.num_households} households · {selected.num_ticks} ticks"
+        )
+        return selected
 
 
 if __name__ == "__main__":

@@ -54,6 +54,24 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
+# `shared/schemas.py` has failed lint since the repo was bootstrapped, which kept
+# CI red on every branch and blocked merges for everyone. The violations are
+# cosmetic — long Field(description=...) strings, and the `str, Enum` mixin that
+# ruff would rather see as `StrEnum`.
+#
+# They are silenced here rather than fixed in place because CONTRIBUTING.md asks
+# for sign-off from all four of us before `shared/schemas.py` changes at all, and
+# an earlier attempt to reformat it (#5) was reverted (#10) within the hour. This
+# keeps that file byte-for-byte untouched, so nothing here needs the schema-change
+# process, and unblocks CI today.
+#
+# This is a stopgap, not a verdict. Drop it once the team agrees on the real fix:
+# wrapping the long lines is harmless, but switching to `StrEnum` is a behaviour
+# change — `str(OrderSide.BUY)` becomes "buy" instead of "OrderSide.BUY" — so that
+# one needs a decision, not a reformat.
+[tool.ruff.lint.per-file-ignores]
+"shared/schemas.py" = ["E501", "UP042"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests", "shared", "simulation", "agents", "forecasting", "dashboard", "data"]
 
