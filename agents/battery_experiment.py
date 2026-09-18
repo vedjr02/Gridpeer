@@ -107,9 +107,21 @@ class Outcome:
         return (self.status_quo_peak_kwh - self.peak_import_kwh) / self.status_quo_peak_kwh * 100
 
 
-def rollout(households: Sequence[HouseholdSeries], decide: Decider) -> Outcome:
-    """Run one strategy over the households and score it against the status quo."""
-    simulator = MarketSimulator(households, max_battery_power_kw=MAX_BATTERY_POWER_KW)
+def rollout(
+    households: Sequence[HouseholdSeries],
+    decide: Decider,
+    network_charge_eur_per_kwh: float = 0.0,
+) -> Outcome:
+    """Run one strategy over the households and score it against the status quo.
+
+    ``network_charge_eur_per_kwh`` is levied on each P2P kWh (buyer pays); the status
+    quo trades nothing, so it pays none.
+    """
+    simulator = MarketSimulator(
+        households,
+        max_battery_power_kw=MAX_BATTERY_POWER_KW,
+        network_charge_eur_per_kwh=network_charge_eur_per_kwh,
+    )
     forecaster = NaiveForecaster(window=4)
     profiles = simulator.profiles
     outcome = Outcome(household_savings_eur=dict.fromkeys(profiles, 0.0))
