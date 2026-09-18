@@ -17,6 +17,7 @@ Baseline + RL trading strategies. See `CLAUDE.md` in this folder for build guida
 python -m agents.run_baseline         # baseline: forecasting -> agents -> market -> settlement
 python -m agents.train_rl             # train ppo_v1 (~1.5 min), select on validation, report on test
 python scripts/compare_strategies.py  # persist baseline + ppo_v1 runs for the dashboard
+python -m agents.battery_experiment   # Stage 5: battery-controlling policy (~5 min)
 pytest agents/
 ```
 
@@ -41,6 +42,36 @@ forecast lags the sun, so its errors are predictable from the time of day; that 
 headroom (+56% against a perfect-foresight ceiling). Price stays with the baseline rule
 — see `rl_env.py` for the measurements behind every design choice, including the two
 reward designs that failed.
+
+## Stage 5: agents that control the battery
+
+`python -m agents.battery_experiment` — measured against the **status quo** (no battery,
+no market), because settlement's grid-only figure is taken after the battery and cannot
+see what a battery earns. Test set: 20 unseen two-day runs, 4 households, 2.5 kW batteries.
+
+| Strategy | Savings vs status quo | Evening peak |
+|---|---|---|
+| Baseline, no battery (the dashboard today) | EUR 11.39 | 0% |
+| Baseline + automatic battery, aware of it | EUR 55.47 | -19.4% |
+| **ppo_battery_v1** (controls its battery) | **EUR 61.68 (+11.2%)** | -19.4% |
+
+Every household beats the status quo. The household with no solar gains the most
+(EUR 4.96 -> 11.93): the automatic battery soaks up midday solar the consumer used to
+buy, and the policy sells stored energy back to it. **The trade-off:** the two prosumers
+earn EUR 3.65-4.71 less than under the automatic battery, because a producer's stored
+energy now competes for the same evening demand. Whether "everyone beats the status
+quo" or "nobody earns less than under the automatic battery" is the right rule is a
+team decision; the experiment prints both. The extra peak cut seen on validation did
+not hold on test — the -19.4% comes from the batteries themselves.
+
+Two lessons that shaped it: an absolute battery target lost 78% (it had to rediscover
+the automatic battery), so the action is a correction to it; and without
+potential-based reward shaping PPO unlearned charging (-70%), because storing at noon
+costs money now and pays hours later.
+
+**Not deployable yet:** the dashboard pipeline can't pass battery state to an agent or
+take a battery command back — that is Part A and Part B of the schema-change proposal.
+This is the evidence for approving it.
 
 ## The RL environment
 

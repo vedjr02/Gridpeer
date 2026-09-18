@@ -72,10 +72,17 @@ from pettingzoo import ParallelEnv
 from agents.baseline import MIN_TRADEABLE_KWH, RuleBasedTrader
 from forecasting.baseline import NaiveForecaster
 from shared.schemas import AgentDecision, ForecastOutput, HouseholdProfile, OrderSide
+from simulation.environment import HouseholdEnvironment
 from simulation.simulator import HouseholdSeries, MarketSimulator, TickResult, timestamp_for
 
 OBSERVATION_SIZE = 8
 ACTION_SIZE = 1
+# With battery control the agent also sees its state of charge and capacity, and
+# chooses a target charge level.
+BATTERY_OBSERVATION_SIZE = OBSERVATION_SIZE + 2
+BATTERY_ACTION_SIZE = ACTION_SIZE + 1
+# Battery capacities are a few kWh; this keeps the capacity feature near [0, 1].
+_CAPACITY_SCALE_KWH = 5.0
 
 # kWh per half-hour tick rarely exceeds ~2 for a residential household; clipping at
 # five keeps a freak reading from dominating the network's input scale.
@@ -112,6 +119,31 @@ def build_observation(forecast: ForecastOutput, profile: HouseholdProfile) -> np
     )
 
 
+def _order(
+    net_kwh: float,
+    action_scale: float,
+    forecast: ForecastOutput,
+    profile: HouseholdProfile,
+    strategy_name: str,
+) -> AgentDecision | None:
+    """An order for ``net_kwh`` (+ sell, - buy), scaled by the quantity action, baseline-priced."""
+    scale = 1.0 + float(np.clip(action_scale, -1.0, 1.0))
+    quantity_kwh = abs(net_kwh) * scale
+    if quantity_kwh < MIN_TRADEABLE_KWH:
+        return None
+    side = OrderSide.SELL if net_kwh > 0 else OrderSide.BUY
+    return AgentDecision(
+        household_id=forecast.household_id,
+        tick=forecast.tick,
+        side=side,
+        quantity_kwh=quantity_kwh,
+        limit_price_eur_per_kwh=_BASELINE._limit_price_eur_per_kwh(
+            profile, side, abs(net_kwh)
+        ),
+        strategy_name=strategy_name,
+    )
+
+
 def decision_from_action(
     action: Sequence[float] | np.ndarray,
     forecast: ForecastOutput,
@@ -126,23 +158,64 @@ def decision_from_action(
     the book. Out-of-range actions are clipped, never rejected — PPO's Gaussian
     policy samples outside the box.
     """
-    net_kwh = forecast.predicted_net_position_kwh
-    scale = 1.0 + float(np.clip(action[0], -1.0, 1.0))
-    quantity_kwh = abs(net_kwh) * scale
-    if quantity_kwh < MIN_TRADEABLE_KWH:
-        return None
-
-    side = OrderSide.SELL if net_kwh > 0 else OrderSide.BUY
-    return AgentDecision(
-        household_id=forecast.household_id,
-        tick=forecast.tick,
-        side=side,
-        quantity_kwh=quantity_kwh,
-        limit_price_eur_per_kwh=_BASELINE._limit_price_eur_per_kwh(
-            profile, side, abs(net_kwh)
-        ),
-        strategy_name=strategy_name,
+    return _order(
+        forecast.predicted_net_position_kwh, action[0], forecast, profile, strategy_name
     )
+
+
+def build_battery_observation(
+    forecast: ForecastOutput, profile: HouseholdProfile, battery_level_kwh: float
+) -> np.ndarray:
+    """The base observation plus state of charge (0-1) and scaled capacity."""
+    capacity_kwh = profile.battery_capacity_kwh
+    state_of_charge = battery_level_kwh / capacity_kwh if capacity_kwh > 0 else 0.0
+    return np.concatenate(
+        [
+            build_observation(forecast, profile),
+            np.array(
+                [state_of_charge, capacity_kwh / _CAPACITY_SCALE_KWH], dtype=np.float32
+            ),
+        ]
+    )
+
+
+def battery_decision(
+    action: Sequence[float] | np.ndarray,
+    forecast: ForecastOutput,
+    profile: HouseholdProfile,
+    environment: HouseholdEnvironment,
+    strategy_name: str,
+) -> tuple[AgentDecision | None, float]:
+    """An order and a battery offset from a battery-controlling action.
+
+    Residual, like the quantity action: ``[0, 0]`` is the rule-based baseline trading
+    on top of the automatic battery, fully aware of it. ``action[1]`` in [-1, 1]
+    adjusts the automatic battery by up to one tick's worth of power: positive
+    discharges extra to sell to a neighbour, negative holds charge back for later.
+    The household plans its order on the metered position that choice implies —
+    the same physics the simulator then runs — and ``action[0]`` scales it.
+    """
+    max_flow_kwh = environment.max_flow_kwh
+    if not math.isfinite(max_flow_kwh):
+        max_flow_kwh = profile.battery_capacity_kwh
+    offset_kwh = float(np.clip(action[1], -1.0, 1.0)) * max_flow_kwh
+    planned_net_kwh = environment.planned_net_kwh(
+        forecast.predicted_net_position_kwh, battery_offset_kwh=offset_kwh
+    )
+    order = _order(planned_net_kwh, action[0], forecast, profile, strategy_name)
+    return order, offset_kwh
+
+
+def status_quo_cost_eur(profile: HouseholdProfile, raw_net_kwh: float) -> float:
+    """What a tick costs with no battery and no marketplace: all of it at grid tariffs.
+
+    The fixed yardstick every strategy's bill is compared against. Settlement's own
+    grid-only figure uses the metered position *after* the battery, so it cannot see
+    what the battery earned; this one can. With no battery the two are identical.
+    """
+    if raw_net_kwh >= 0:
+        return -raw_net_kwh * profile.grid_export_tariff_eur_per_kwh
+    return -raw_net_kwh * profile.grid_import_tariff_eur_per_kwh
 
 
 def without_battery(households: Sequence[HouseholdSeries]) -> list[HouseholdSeries]:
@@ -183,6 +256,9 @@ class GridPeerParallelEnv(ParallelEnv):
         strategy_name: str = "rl_policy",
         reward_mode: str = "mixed",
         own_weight: float = 0.5,
+        battery_control: bool = False,
+        max_battery_power_kw: float | None = None,
+        shaping_gamma: float | None = None,
     ) -> None:
         """households: the community and its full series (all the same length).
 
@@ -200,6 +276,18 @@ class GridPeerParallelEnv(ParallelEnv):
                 f"episode_ticks must be in 1..{series_ticks} (got {self.episode_ticks})"
             )
         self._series_ticks = series_ticks
+        if battery_control and not use_battery:
+            raise ValueError("battery_control needs use_battery=True: nothing to control")
+        self.battery_control = battery_control
+        self.max_battery_power_kw = max_battery_power_kw
+        # Potential-based shaping (Ng, Harada & Russell 1999) for battery control: a
+        # kWh stored is credited at the household's mid-tariff when stored and debited
+        # when used. Storing midday solar costs export revenue *now* and pays off hours
+        # later; without shaping PPO sees the cost clearly and the payoff faintly, and
+        # unlearns charging (measured: -70% against the automatic battery). Shaping of
+        # this form provably leaves the optimal policy unchanged. It touches the
+        # training reward only — ``infos["savings_eur"]`` stays the real saving.
+        self.shaping_gamma = shaping_gamma
         if reward_mode not in ("community", "individual", "mixed"):
             raise ValueError(
                 f"reward_mode must be 'community', 'individual' or 'mixed' (got {reward_mode})"
@@ -217,12 +305,12 @@ class GridPeerParallelEnv(ParallelEnv):
         self.possible_agents = [h.profile.household_id for h in self._households]
         self.agents: list[str] = []
         self._profiles = {h.profile.household_id: h.profile for h in self._households}
+        obs_size = BATTERY_OBSERVATION_SIZE if battery_control else OBSERVATION_SIZE
+        act_size = BATTERY_ACTION_SIZE if battery_control else ACTION_SIZE
         self._observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(OBSERVATION_SIZE,), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(obs_size,), dtype=np.float32
         )
-        self._action_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(ACTION_SIZE,), dtype=np.float32
-        )
+        self._action_space = spaces.Box(low=-1.0, high=1.0, shape=(act_size,), dtype=np.float32)
         self._rng = np.random.default_rng()
         self._simulator: MarketSimulator | None = None
         self._window: list[HouseholdSeries] = []
@@ -255,7 +343,9 @@ class GridPeerParallelEnv(ParallelEnv):
             )
             for h in self._households
         ]
-        self._simulator = MarketSimulator(self._window)
+        self._simulator = MarketSimulator(
+            self._window, max_battery_power_kw=self.max_battery_power_kw
+        )
         self.agents = list(self.possible_agents)
         self.last_tick = None
         self._forecast_tick(0)
@@ -275,7 +365,19 @@ class GridPeerParallelEnv(ParallelEnv):
             for h in self._window
         }
 
+    def battery_level_kwh(self, agent: str) -> float:
+        """``agent``'s current battery charge, kWh."""
+        assert self._simulator is not None
+        return self._simulator.environments[agent].battery_level_kwh
+
     def _observations(self) -> dict[str, np.ndarray]:
+        if self.battery_control:
+            return {
+                agent: build_battery_observation(
+                    self._forecasts[agent], self._profiles[agent], self.battery_level_kwh(agent)
+                )
+                for agent in self.agents
+            }
         return {
             agent: build_observation(self._forecasts[agent], self._profiles[agent])
             for agent in self.agents
@@ -296,27 +398,47 @@ class GridPeerParallelEnv(ParallelEnv):
         if self._simulator is None or not self.agents:
             raise RuntimeError("call reset() before step()")
 
-        orders = [
-            order
-            for agent in self.agents
-            if agent in actions
-            and (
-                order := decision_from_action(
+        levels_before = {
+            agent: self._simulator.environments[agent].battery_level_kwh for agent in self.agents
+        }
+        orders: list[AgentDecision] = []
+        offsets: dict[str, float] = {}
+        for agent in self.agents:
+            if agent not in actions:
+                continue
+            if self.battery_control:
+                order, offsets[agent] = battery_decision(
                     actions[agent],
                     self._forecasts[agent],
                     self._profiles[agent],
+                    self._simulator.environments[agent],
                     self.strategy_name,
                 )
-            )
-            is not None
-        ]
-        result = self._simulator.step(orders)
+            else:
+                order = decision_from_action(
+                    actions[agent], self._forecasts[agent], self._profiles[agent],
+                    self.strategy_name,
+                )
+            if order is not None:
+                orders.append(order)
+        result = self._simulator.step(orders, battery_offsets_kwh=offsets or None)
         self.last_tick = result
 
-        own_savings_eur = {
-            agent: result.settlements[agent].savings_eur if agent in result.settlements else 0.0
-            for agent in self.agents
-        }
+        # Savings against the status quo (no battery, no market), so that what a
+        # battery earns counts. With batteries off this equals settlement's own
+        # savings figure exactly — the pipeline-equivalence test pins that.
+        own_savings_eur = {}
+        for agent in self.agents:
+            state = result.household_states[agent]
+            raw_net_kwh = state.solar_generation_kwh - state.demand_kwh
+            bill_eur = (
+                result.settlements[agent].p2p_cost_eur
+                if agent in result.settlements
+                else status_quo_cost_eur(self._profiles[agent], state.net_position_kwh)
+            )
+            own_savings_eur[agent] = (
+                status_quo_cost_eur(self._profiles[agent], raw_net_kwh) - bill_eur
+            )
         community_eur = sum(own_savings_eur.values())
         if self.reward_mode == "community":
             rewards = dict.fromkeys(self.agents, community_eur * REWARD_SCALE)
@@ -332,12 +454,23 @@ class GridPeerParallelEnv(ParallelEnv):
                 * REWARD_SCALE
                 for agent, own in own_savings_eur.items()
             }
+        done = self._simulator.tick >= self._simulator.num_ticks
+        if self.battery_control and self.shaping_gamma is not None:
+            for agent in self.agents:
+                profile = self._profiles[agent]
+                value = (
+                    profile.grid_export_tariff_eur_per_kwh
+                    + profile.grid_import_tariff_eur_per_kwh
+                ) / 2.0
+                # Phi(terminal) = 0: charge left at the end of a run earns nothing.
+                level_after = 0.0 if done else result.household_states[agent].battery_level_kwh
+                shaping_eur = (self.shaping_gamma * level_after - levels_before[agent]) * value
+                rewards[agent] += shaping_eur * REWARD_SCALE
         # Each household's own savings, whatever it was rewarded on: summing these over
         # agents always gives the community total, so episode accounting never
         # double-counts a shared reward.
         infos = {agent: {"savings_eur": own_savings_eur[agent]} for agent in self.agents}
 
-        done = self._simulator.tick >= self._simulator.num_ticks
         if done:
             observations = {
                 agent: np.zeros(OBSERVATION_SIZE, dtype=np.float32) for agent in self.agents
