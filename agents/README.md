@@ -8,15 +8,39 @@ Baseline + RL trading strategies. See `CLAUDE.md` in this folder for build guida
 
 - [x] Rule-based baseline, wired through the real pipeline
 - [x] PettingZoo multi-agent environment (`rl_env.py`) + SB3 shared-policy adapter (`rl_vec_env.py`)
-- [ ] PPO training (Stable-Baselines3)
+- [x] PPO training (Stable-Baselines3) — `ppo_v1`: **+11.9% vs baseline on unseen data, every household better off**
 - [x] Evaluation harness producing `RunSummary` (baseline vs. RL)
 
 ## Running just this module
 
 ```bash
-python -m agents.run_baseline    # forecasting -> agents -> market -> settlement, printed
+python -m agents.run_baseline         # baseline: forecasting -> agents -> market -> settlement
+python -m agents.train_rl             # train ppo_v1 (~1.5 min), select on validation, report on test
+python scripts/compare_strategies.py  # persist baseline + ppo_v1 runs for the dashboard
 pytest agents/
 ```
+
+## Result: ppo_v1 vs the rule-based baseline
+
+Scored once on a test set never used for training or selection: 20 synthetic two-day
+runs of 4 households, from a cold start, as the dashboard runs.
+
+| | Community savings | Runs won | Worst household vs baseline |
+|---|---|---|---|
+| Rule-based baseline | EUR 11.39 | — | — |
+| **ppo_v1** | **EUR 12.75 (+11.9%)** | **20 / 20** | **+EUR 0.09 (all better off)** |
+
+Five training seeds, chosen on a separate validation set with fairness first (no
+household worse off), then uplift. On the dashboard's own single demo run the gain is
+smaller (+3.1%) and two households move by about a cent each way — one run is noisy,
+and its producer has a 3 kW panel where training used 6 kW. Fairness is established
+across runs, not guaranteed in every run.
+
+**What it learned:** when to offer more or less than the naive forecast says. The naive
+forecast lags the sun, so its errors are predictable from the time of day; that is the
+headroom (+56% against a perfect-foresight ceiling). Price stays with the baseline rule
+— see `rl_env.py` for the measurements behind every design choice, including the two
+reward designs that failed.
 
 ## The RL environment
 
