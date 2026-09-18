@@ -1,9 +1,11 @@
 """Tests for the orchestration loop: the forecasting stage, and the full pipeline."""
 
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
+from dashboard import orchestrator
 from dashboard.orchestrator import (
     HouseholdSeries,
     _grid_imports_kwh,
@@ -18,6 +20,7 @@ from shared.schemas import (
     AgentRole,
     ForecastOutput,
     HouseholdOutcome,
+    HouseholdProfile,
     MarketState,
     OrderSide,
     RunSummary,
@@ -277,3 +280,54 @@ def test_demo_households_series_feed_the_pipeline_unchanged() -> None:
     households = demo_households(num_households=2, days=1)
     assert all(isinstance(h, HouseholdSeries) for h in households)
     assert all(len(h.demand_kwh) == len(h.solar_kwh) for h in households)
+
+
+# -- pluggable strategy + persisted default run -----------------------------
+
+class _AlwaysBuy:
+    """Stand-in for a learned policy: satisfies TradingStrategy, shares no base class."""
+
+    def decide(
+        self, forecast: ForecastOutput, profile: HouseholdProfile
+    ) -> AgentDecision | None:
+        """Buy 1 kWh every tick at the household's import tariff."""
+        return AgentDecision(
+            household_id=forecast.household_id,
+            tick=forecast.tick,
+            side=OrderSide.BUY,
+            quantity_kwh=1.0,
+            limit_price_eur_per_kwh=profile.grid_import_tariff_eur_per_kwh,
+            strategy_name="always_buy",
+        )
+
+
+def test_run_pipeline_accepts_any_strategy_with_decide() -> None:
+    """An RL policy plugs in by exposing decide — no subclassing the baseline."""
+    result = run_pipeline(
+        demo_households(num_households=2, days=1),
+        num_ticks=10,
+        strategy=_AlwaysBuy(),
+        strategy_name="always_buy",
+    )
+    assert len(result.decisions) == 20
+    assert all(d.strategy_name == "always_buy" for d in result.decisions)
+    assert result.summary is not None
+    assert result.summary.strategy_name == "always_buy"
+
+
+def test_main_persists_a_run_the_dashboard_can_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`make run-sim` must leave a run behind — the dashboard renders stored runs only."""
+    db_path = tmp_path / "gridpeer.db"
+    monkeypatch.setattr(orchestrator, "DEFAULT_DB_PATH", db_path)
+    orchestrator.main()
+
+    with RunStore(db_path) as store:
+        run_ids = store.list_runs()
+        assert len(run_ids) == 1
+        summary = store.load_run_summary(run_ids[0])
+        assert summary is not None
+        assert summary.num_households == 4
+        assert store.load_household_outcomes(run_ids[0])
+        assert store.load_market_states(run_ids[0])
