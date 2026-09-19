@@ -7,6 +7,7 @@ venv/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.hypothesis/
 
 # Env / secrets
 .env

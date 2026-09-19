@@ -1,4 +1,4 @@
-"""Tests for the continuous double auction.
+"""Tests for the per-tick double auction.
 
 The two-household case below is the hand-calculated sanity check simulation/CLAUDE.md
 asks for: it stays in the suite permanently, and if it ever breaks, something
@@ -10,7 +10,7 @@ from datetime import datetime
 import pytest
 
 from shared.schemas import AgentDecision, MarketState, OrderSide, TradeEvent
-from simulation.market import clear_tick, trade_id
+from simulation.market import PricingRule, clear_tick, trade_id
 
 TICK = 1
 TIMESTAMP = datetime(2026, 1, 1, 8, 0)
@@ -165,23 +165,79 @@ def test_one_seller_fills_several_buyers_best_price_first():
 
 
 # ---------------------------------------------------------------------------
-# Price-time priority
+# Price priority, with ties shared pro-rata
 # ---------------------------------------------------------------------------
 
-def test_equal_prices_are_broken_by_arrival_order():
-    """Two sellers at the same price: the one that arrived first fills first."""
+def test_tied_sellers_share_a_short_buyer_equally():
+    """Two identical sellers, one buyer for half their volume: each sells half.
+
+    Before pro-rata, whichever seller came first in the input list sold everything
+    and the other sold nothing — every tie, every tick, for a whole run.
+    """
     state = clear_tick(
         tick=TICK,
         timestamp=TIMESTAMP,
         orders=[
-            order("hh_early", OrderSide.SELL, quantity_kwh=1.0, limit_price_eur_per_kwh=0.10),
-            order("hh_late", OrderSide.SELL, quantity_kwh=1.0, limit_price_eur_per_kwh=0.10),
+            order("hh_first", OrderSide.SELL, quantity_kwh=1.0, limit_price_eur_per_kwh=0.10),
+            order("hh_second", OrderSide.SELL, quantity_kwh=1.0, limit_price_eur_per_kwh=0.10),
             order("hh_buyer", OrderSide.BUY, quantity_kwh=1.0, limit_price_eur_per_kwh=0.20),
         ],
     )
 
-    assert [t.seller_id for t in state.trades] == ["hh_early"]
-    assert [o.household_id for o in state.unmatched_sell_orders] == ["hh_late"]
+    sold = {t.seller_id: t.quantity_kwh for t in state.trades}
+    assert sold == pytest.approx({"hh_first": 0.5, "hh_second": 0.5})
+    assert {o.household_id: o.quantity_kwh for o in state.unmatched_sell_orders} == (
+        pytest.approx({"hh_first": 0.5, "hh_second": 0.5})
+    )
+
+
+def test_tied_orders_fill_in_proportion_to_their_size():
+    """Pro-rata is by size: a 3 kWh and a 1 kWh seller share 2 kWh as 1.5 and 0.5."""
+    state = clear_tick(
+        tick=TICK,
+        timestamp=TIMESTAMP,
+        orders=[
+            order("hh_small", OrderSide.SELL, quantity_kwh=1.0, limit_price_eur_per_kwh=0.10),
+            order("hh_large", OrderSide.SELL, quantity_kwh=3.0, limit_price_eur_per_kwh=0.10),
+            order("hh_buyer", OrderSide.BUY, quantity_kwh=2.0, limit_price_eur_per_kwh=0.20),
+        ],
+    )
+
+    sold = {t.seller_id: t.quantity_kwh for t in state.trades}
+    assert sold == pytest.approx({"hh_large": 1.5, "hh_small": 0.5})
+    assert state.unmatched_buy_orders == []
+
+
+def test_tied_buyers_share_a_short_seller_too():
+    """The rule is symmetric: buyers at one price split a scarce seller pro-rata."""
+    state = clear_tick(
+        tick=TICK,
+        timestamp=TIMESTAMP,
+        orders=[
+            order("hh_seller", OrderSide.SELL, quantity_kwh=1.0, limit_price_eur_per_kwh=0.10),
+            order("hh_b1", OrderSide.BUY, quantity_kwh=2.0, limit_price_eur_per_kwh=0.20),
+            order("hh_b2", OrderSide.BUY, quantity_kwh=2.0, limit_price_eur_per_kwh=0.20),
+        ],
+    )
+
+    bought = {t.buyer_id: t.quantity_kwh for t in state.trades}
+    assert bought == pytest.approx({"hh_b1": 0.5, "hh_b2": 0.5})
+
+
+def test_the_order_of_the_book_never_decides_who_trades():
+    """Reversing the input changes nothing — not the trades, not their ids."""
+    book = [
+        order("hh_a", OrderSide.SELL, quantity_kwh=1.0, limit_price_eur_per_kwh=0.10),
+        order("hh_b", OrderSide.SELL, quantity_kwh=2.0, limit_price_eur_per_kwh=0.10),
+        order("hh_c", OrderSide.SELL, quantity_kwh=1.0, limit_price_eur_per_kwh=0.12),
+        order("hh_d", OrderSide.BUY, quantity_kwh=1.5, limit_price_eur_per_kwh=0.20),
+        order("hh_e", OrderSide.BUY, quantity_kwh=1.5, limit_price_eur_per_kwh=0.20),
+    ]
+
+    forward = clear_tick(tick=TICK, timestamp=TIMESTAMP, orders=book)
+    backward = clear_tick(tick=TICK, timestamp=TIMESTAMP, orders=list(reversed(book)))
+
+    assert forward.trades == backward.trades
 
 
 def test_cheaper_seller_is_matched_before_a_dearer_one():
@@ -304,3 +360,85 @@ def test_two_orders_from_the_same_household_are_rejected():
                 order("hh_001", OrderSide.BUY, quantity_kwh=1.0, limit_price_eur_per_kwh=0.20),
             ],
         )
+
+
+# ---------------------------------------------------------------------------
+# Pricing rules: same matching, different prices
+# ---------------------------------------------------------------------------
+
+def _two_buyers_one_seller() -> list[AgentDecision]:
+    """The book from test_one_seller_fills_several_buyers_best_price_first."""
+    return [
+        order("hh_low", OrderSide.BUY, quantity_kwh=1.0, limit_price_eur_per_kwh=0.14),
+        order("hh_high", OrderSide.BUY, quantity_kwh=1.0, limit_price_eur_per_kwh=0.22),
+        order("hh_seller", OrderSide.SELL, quantity_kwh=1.5, limit_price_eur_per_kwh=0.10),
+    ]
+
+
+def test_pairwise_midpoint_is_the_default():
+    """Existing callers see no change: each pair still clears at its own midpoint."""
+    default = clear_tick(tick=TICK, timestamp=TIMESTAMP, orders=_two_buyers_one_seller())
+    explicit = clear_tick(
+        tick=TICK,
+        timestamp=TIMESTAMP,
+        orders=_two_buyers_one_seller(),
+        pricing=PricingRule.PAIRWISE_MIDPOINT,
+    )
+
+    assert default == explicit
+    assert [t.clearing_price_eur_per_kwh for t in default.trades] == pytest.approx([0.16, 0.12])
+
+
+def test_uniform_pricing_clears_every_trade_at_the_marginal_midpoint():
+    """One price for the tick, calculated by hand.
+
+    Matching is unchanged — hh_high buys 1.0, hh_low buys 0.5. The marginal pair is
+    the last one matched, hh_low (0.14) with the seller (0.10), so everyone trades at
+    (0.14 + 0.10) / 2 = 0.12. hh_high pays 0.12 where pairwise pricing charged it
+    0.16: under a uniform price, a buyer who bids high is not made to pay for it.
+    """
+    state = clear_tick(
+        tick=TICK,
+        timestamp=TIMESTAMP,
+        orders=_two_buyers_one_seller(),
+        pricing=PricingRule.UNIFORM,
+    )
+
+    assert [t.buyer_id for t in state.trades] == ["hh_high", "hh_low"]
+    assert [t.quantity_kwh for t in state.trades] == [1.0, 0.5]
+    assert [t.clearing_price_eur_per_kwh for t in state.trades] == pytest.approx([0.12, 0.12])
+    assert state.clearing_price_eur_per_kwh == pytest.approx(0.12)
+
+
+def test_uniform_pricing_matches_exactly_the_same_energy():
+    """The rule changes prices only, so the two rules can be compared like for like."""
+    pairwise = clear_tick(tick=TICK, timestamp=TIMESTAMP, orders=_two_buyers_one_seller())
+    uniform = clear_tick(
+        tick=TICK, timestamp=TIMESTAMP, orders=_two_buyers_one_seller(), pricing="uniform"
+    )
+
+    def volumes(state: MarketState) -> list[tuple[str, str, float]]:
+        return [(t.buyer_id, t.seller_id, t.quantity_kwh) for t in state.trades]
+
+    assert volumes(pairwise) == volumes(uniform)
+    assert pairwise.unmatched_buy_orders == uniform.unmatched_buy_orders
+
+
+def test_uniform_pricing_with_nothing_to_clear_has_no_price():
+    state = clear_tick(
+        tick=TICK,
+        timestamp=TIMESTAMP,
+        orders=[
+            order("hh_buy", OrderSide.BUY, quantity_kwh=1.0, limit_price_eur_per_kwh=0.08),
+            order("hh_sell", OrderSide.SELL, quantity_kwh=1.0, limit_price_eur_per_kwh=0.12),
+        ],
+        pricing=PricingRule.UNIFORM,
+    )
+
+    assert state.trades == []
+    assert state.clearing_price_eur_per_kwh is None
+
+
+def test_an_unknown_pricing_rule_is_rejected():
+    with pytest.raises(ValueError, match="sealed_bid"):
+        clear_tick(tick=TICK, timestamp=TIMESTAMP, orders=[], pricing="sealed_bid")
