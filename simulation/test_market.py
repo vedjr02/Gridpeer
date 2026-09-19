@@ -165,23 +165,79 @@ def test_one_seller_fills_several_buyers_best_price_first():
 
 
 # ---------------------------------------------------------------------------
-# Price-time priority
+# Price priority, with ties shared pro-rata
 # ---------------------------------------------------------------------------
 
-def test_equal_prices_are_broken_by_arrival_order():
-    """Two sellers at the same price: the one that arrived first fills first."""
+def test_tied_sellers_share_a_short_buyer_equally():
+    """Two identical sellers, one buyer for half their volume: each sells half.
+
+    Before pro-rata, whichever seller came first in the input list sold everything
+    and the other sold nothing — every tie, every tick, for a whole run.
+    """
     state = clear_tick(
         tick=TICK,
         timestamp=TIMESTAMP,
         orders=[
-            order("hh_early", OrderSide.SELL, quantity_kwh=1.0, limit_price_eur_per_kwh=0.10),
-            order("hh_late", OrderSide.SELL, quantity_kwh=1.0, limit_price_eur_per_kwh=0.10),
+            order("hh_first", OrderSide.SELL, quantity_kwh=1.0, limit_price_eur_per_kwh=0.10),
+            order("hh_second", OrderSide.SELL, quantity_kwh=1.0, limit_price_eur_per_kwh=0.10),
             order("hh_buyer", OrderSide.BUY, quantity_kwh=1.0, limit_price_eur_per_kwh=0.20),
         ],
     )
 
-    assert [t.seller_id for t in state.trades] == ["hh_early"]
-    assert [o.household_id for o in state.unmatched_sell_orders] == ["hh_late"]
+    sold = {t.seller_id: t.quantity_kwh for t in state.trades}
+    assert sold == pytest.approx({"hh_first": 0.5, "hh_second": 0.5})
+    assert {o.household_id: o.quantity_kwh for o in state.unmatched_sell_orders} == (
+        pytest.approx({"hh_first": 0.5, "hh_second": 0.5})
+    )
+
+
+def test_tied_orders_fill_in_proportion_to_their_size():
+    """Pro-rata is by size: a 3 kWh and a 1 kWh seller share 2 kWh as 1.5 and 0.5."""
+    state = clear_tick(
+        tick=TICK,
+        timestamp=TIMESTAMP,
+        orders=[
+            order("hh_small", OrderSide.SELL, quantity_kwh=1.0, limit_price_eur_per_kwh=0.10),
+            order("hh_large", OrderSide.SELL, quantity_kwh=3.0, limit_price_eur_per_kwh=0.10),
+            order("hh_buyer", OrderSide.BUY, quantity_kwh=2.0, limit_price_eur_per_kwh=0.20),
+        ],
+    )
+
+    sold = {t.seller_id: t.quantity_kwh for t in state.trades}
+    assert sold == pytest.approx({"hh_large": 1.5, "hh_small": 0.5})
+    assert state.unmatched_buy_orders == []
+
+
+def test_tied_buyers_share_a_short_seller_too():
+    """The rule is symmetric: buyers at one price split a scarce seller pro-rata."""
+    state = clear_tick(
+        tick=TICK,
+        timestamp=TIMESTAMP,
+        orders=[
+            order("hh_seller", OrderSide.SELL, quantity_kwh=1.0, limit_price_eur_per_kwh=0.10),
+            order("hh_b1", OrderSide.BUY, quantity_kwh=2.0, limit_price_eur_per_kwh=0.20),
+            order("hh_b2", OrderSide.BUY, quantity_kwh=2.0, limit_price_eur_per_kwh=0.20),
+        ],
+    )
+
+    bought = {t.buyer_id: t.quantity_kwh for t in state.trades}
+    assert bought == pytest.approx({"hh_b1": 0.5, "hh_b2": 0.5})
+
+
+def test_the_order_of_the_book_never_decides_who_trades():
+    """Reversing the input changes nothing — not the trades, not their ids."""
+    book = [
+        order("hh_a", OrderSide.SELL, quantity_kwh=1.0, limit_price_eur_per_kwh=0.10),
+        order("hh_b", OrderSide.SELL, quantity_kwh=2.0, limit_price_eur_per_kwh=0.10),
+        order("hh_c", OrderSide.SELL, quantity_kwh=1.0, limit_price_eur_per_kwh=0.12),
+        order("hh_d", OrderSide.BUY, quantity_kwh=1.5, limit_price_eur_per_kwh=0.20),
+        order("hh_e", OrderSide.BUY, quantity_kwh=1.5, limit_price_eur_per_kwh=0.20),
+    ]
+
+    forward = clear_tick(tick=TICK, timestamp=TIMESTAMP, orders=book)
+    backward = clear_tick(tick=TICK, timestamp=TIMESTAMP, orders=list(reversed(book)))
+
+    assert forward.trades == backward.trades
 
 
 def test_cheaper_seller_is_matched_before_a_dearer_one():
