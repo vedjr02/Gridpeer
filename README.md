@@ -22,7 +22,7 @@ flowchart LR
         A[RL / Baseline Trading Agents]
     end
     subgraph Simulation
-        S[Market Clearing Engine<br/>Continuous Double Auction]
+        S[Market Clearing Engine<br/>Per-tick Double Auction]
     end
     subgraph Dashboard
         D[Orchestrator + Live Dashboard]
@@ -83,7 +83,7 @@ See `CLAUDE.md` for how AI coding assistants should work in this repo, and `ROAD
 
 | Module | Owner | Focus |
 |---|---|---|
-| Simulation & market mechanism | _TBD_ | Continuous double auction, household environment |
+| Simulation & market mechanism | _TBD_ | Per-tick double auction, household environment |
 | RL / trading agents | _TBD_ | Baseline + RL bidding strategy, evaluation harness |
 | Forecasting | _TBD_ | Demand + solar generation forecasting |
 | Orchestration & dashboard | _TBD_ | Simulation loop, persistence, live outcomes dashboard |

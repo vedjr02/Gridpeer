@@ -1,4 +1,4 @@
-"""Tests for the continuous double auction.
+"""Tests for the per-tick double auction.
 
 The two-household case below is the hand-calculated sanity check simulation/CLAUDE.md
 asks for: it stays in the suite permanently, and if it ever breaks, something

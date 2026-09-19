@@ -4,7 +4,7 @@
 
 Week 1 and most of week 2 are done: the pipeline is real end to end, not a skeleton.
 `make run-sim` forecasts every household from history only, asks a strategy for an
-order, clears a continuous double auction, settles against metered positions,
+order, clears a per-tick double auction, settles against metered positions,
 persists the run to SQLite and rolls it up into `RunSummary`. `streamlit run
 dashboard/app.py` renders that persisted run — savings, CO2 avoided, peak-load
 reduction, forecast diagnostics.
@@ -51,7 +51,7 @@ Also settle now: **who has final say when two people disagree on a schema field.
 
 ## Week 2 — Real modules
 
-- [~] **Simulation:** continuous double auction, household environment and settlement are implemented and tested; calibration against real CER data is still outstanding — households come from `data/synthetic.py`
+- [~] **Simulation:** per-tick double auction, household environment and settlement are implemented and tested; calibration against real CER data is still outstanding — households come from `data/synthetic.py`
 - [x] **Forecasting:** LightGBM demand model with a walk-forward backtest (MAE/MAPE); solar uses a tick-of-day climatology — boring and reliable beats fancy and unstable at this stage
 - [x] **Agents:** the rule-based baseline runs through the real pipeline and is the comparison baseline for everything after
 - [x] **Dashboard:** reads persisted runs only, with the outcomes narrative split across Outcomes / Strategy comparison / Forecast detail

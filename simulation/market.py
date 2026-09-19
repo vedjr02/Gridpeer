@@ -1,10 +1,16 @@
-"""Continuous double auction: turn a tick's orders into cleared trades.
+"""Per-tick double auction: turn a tick's orders into cleared trades.
 
 Build-order step 1/3 (see simulation/CLAUDE.md). This module owns the market
 mechanism and nothing else — it does not decide what any household bids, it only
 clears whatever orders it is given, and it never reaches into another module's
 internals. The only things crossing this boundary are shared contracts:
 ``AgentDecision`` in, ``TradeEvent``/``MarketState`` out.
+
+What kind of auction this is, precisely: a *call* auction (a sealed-bid double
+auction). Every household submits at most one order per half-hour tick, the whole
+book is collected, and it is cleared once. It is not a continuous double auction —
+there is no order flow within a tick, so orders never meet one at a time as they
+arrive, and no order has an arrival time that could earn it priority.
 
 Mechanism, in one paragraph: buy orders are ranked by descending limit price and
 sell orders by ascending limit price, ties broken by arrival order in the input

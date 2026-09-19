@@ -2,13 +2,13 @@
 
 Owner: Amogh Gaikwad (@ag2502)
 
-Market clearing mechanism (continuous double auction) + household environment. See `CLAUDE.md` in this folder for build guidance, and the root `README.md` for how this fits the overall architecture.
+Market clearing mechanism (a double auction cleared once per tick — a *call* auction, not a continuous one) + household environment. See `CLAUDE.md` in this folder for build guidance, and the root `README.md` for how this fits the overall architecture.
 
 ## Status
 
 - [x] 2-household deterministic test case
 - [~] Household environment — battery + net position done; real data loading waits on `data/`
-- [x] N-household continuous double auction
+- [x] N-household double auction, cleared once per tick
 - [x] Grid-baseline fallback for unmatched orders
 - [x] `MarketSimulator.step()` — physics, clearing and settlement in one call
 
