@@ -33,6 +33,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 
 from shared.schemas import AgentDecision, MarketState, OrderSide, TradeEvent
 
@@ -40,6 +41,23 @@ from shared.schemas import AgentDecision, MarketState, OrderSide, TradeEvent
 # Anything below this (1 µWh) is treated as filled — well under the resolution of
 # any real meter reading, and it stops float dust from becoming a phantom order.
 QUANTITY_EPSILON_KWH = 1e-9
+
+
+class PricingRule(StrEnum):
+    """How the energy a tick's matching agreed on is priced.
+
+    Matching — who trades with whom, and how much — is the same under both rules;
+    only the price differs, so comparing them isolates what the pricing rule alone
+    does to household savings.
+    """
+
+    PAIRWISE_MIDPOINT = "pairwise_midpoint"
+    """Each matched pair trades at the midpoint of its own two limits (the default).
+    Discriminatory: different pairs in one tick pay different prices."""
+
+    UNIFORM = "uniform"
+    """Every trade in the tick clears at one price: the midpoint of the marginal —
+    last-matched — buy and sell limits. The standard uniform-price double auction."""
 
 
 @dataclass
@@ -89,6 +107,18 @@ def _clearing_price_eur_per_kwh(buy: AgentDecision, sell: AgentDecision) -> floa
     learning to trade.
     """
     return (buy.limit_price_eur_per_kwh + sell.limit_price_eur_per_kwh) / 2
+
+
+def _uniform_price_eur_per_kwh(matches: Sequence[_Match]) -> float:
+    """One price for the whole tick: the midpoint of the marginal pair's limits.
+
+    Matches run from the best-priced levels down, so the last one pairs the lowest
+    buy limit that traded with the highest sell limit that traded. Its midpoint is
+    at or below every matched buyer's limit and at or above every matched seller's,
+    so nobody trades at a price they refused.
+    """
+    marginal = matches[-1]
+    return _clearing_price_eur_per_kwh(marginal.buy.order, marginal.sell.order)
 
 
 def _validate(tick: int, orders: Sequence[AgentDecision]) -> None:
@@ -217,6 +247,7 @@ def clear_tick(
     tick: int,
     timestamp: datetime,
     orders: Sequence[AgentDecision],
+    pricing: PricingRule = PricingRule.PAIRWISE_MIDPOINT,
 ) -> MarketState:
     """Clear one tick's order book and return the resulting market state.
 
@@ -226,10 +257,13 @@ def clear_tick(
     against the household's grid import/export tariff instead. That fallback is what
     makes the P2P-versus-grid-only comparison meaningful.
 
-    ``MarketState.clearing_price_eur_per_kwh`` is the volume-weighted average price
-    across the tick's trades, or ``None`` when nothing cleared.
+    ``pricing`` chooses how matched energy is priced (see ``PricingRule``); matching
+    is identical under every rule. ``MarketState.clearing_price_eur_per_kwh`` is the
+    volume-weighted average price across the tick's trades — the one uniform price,
+    under ``UNIFORM`` — or ``None`` when nothing cleared.
     """
     _validate(tick, orders)
+    pricing = PricingRule(pricing)
 
     buys = [
         _Entry(index, order, order.quantity_kwh)
@@ -242,6 +276,13 @@ def clear_tick(
         if order.side is OrderSide.SELL
     ]
 
+    matches = _match_book(buys, sells)
+    uniform_price = (
+        _uniform_price_eur_per_kwh(matches)
+        if pricing is PricingRule.UNIFORM and matches
+        else None
+    )
+
     trades = [
         TradeEvent(
             trade_id=trade_id(tick, sequence),
@@ -250,11 +291,13 @@ def clear_tick(
             buyer_id=match.buy.order.household_id,
             seller_id=match.sell.order.household_id,
             quantity_kwh=match.quantity_kwh,
-            clearing_price_eur_per_kwh=_clearing_price_eur_per_kwh(
-                match.buy.order, match.sell.order
+            clearing_price_eur_per_kwh=(
+                uniform_price
+                if uniform_price is not None
+                else _clearing_price_eur_per_kwh(match.buy.order, match.sell.order)
             ),
         )
-        for sequence, match in enumerate(_match_book(buys, sells))
+        for sequence, match in enumerate(matches)
     ]
 
     return MarketState(

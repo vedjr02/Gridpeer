@@ -5,6 +5,7 @@ from datetime import datetime
 import pytest
 
 from shared.schemas import AgentDecision, AgentRole, HouseholdProfile, OrderSide
+from simulation.market import PricingRule
 from simulation.simulator import EPOCH, HouseholdSeries, MarketSimulator
 
 IMPORT_TARIFF = 0.25
@@ -279,3 +280,19 @@ def test_battery_setpoints_reach_named_households_only():
     # b runs automatically and stores its surplus.
     assert result.household_states["b"].battery_level_kwh == pytest.approx(2.0)
     assert result.household_states["b"].net_position_kwh == pytest.approx(0.0)
+
+
+def test_the_simulator_passes_its_pricing_rule_to_the_market():
+    """Choosing a pricing rule is one constructor argument, and it holds every tick."""
+    households = complementary_pair(ticks=2)
+    book = [
+        order("hh_sell", 0, OrderSide.SELL, 2.0, 0.10),
+        order("hh_buy", 0, OrderSide.BUY, 2.0, 0.20),
+    ]
+
+    pairwise = MarketSimulator(households).step(book)
+    uniform = MarketSimulator(households, pricing=PricingRule.UNIFORM).step(book)
+
+    # One pair, so the marginal midpoint and the pair's own midpoint coincide.
+    assert uniform.market_state.clearing_price_eur_per_kwh == pytest.approx(0.15)
+    assert uniform.savings_eur == pytest.approx(pairwise.savings_eur)

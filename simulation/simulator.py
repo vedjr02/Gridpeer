@@ -36,7 +36,7 @@ from datetime import datetime, timedelta
 
 from shared.schemas import AgentDecision, HouseholdProfile, MarketState
 from simulation.environment import HouseholdEnvironment, HouseholdState
-from simulation.market import clear_tick
+from simulation.market import PricingRule, clear_tick
 from simulation.settlement import HouseholdSettlement, settle_tick
 
 TICK_MINUTES = 30
@@ -102,6 +102,7 @@ class MarketSimulator:
         epoch: datetime = EPOCH,
         max_battery_power_kw: float | None = None,
         network_charge_eur_per_kwh: float = 0.0,
+        pricing: PricingRule = PricingRule.PAIRWISE_MIDPOINT,
     ) -> None:
         """households: the community, each with its own profile and series.
 
@@ -109,13 +110,15 @@ class MarketSimulator:
         per household_id. epoch: wall-clock time of tick 0. max_battery_power_kw:
         battery power limit for every household, None for unlimited (the default).
         network_charge_eur_per_kwh: levied on each P2P kWh, paid by the buyer (see
-        ``settle_tick``); zero by default.
+        ``settle_tick``); zero by default. pricing: how matched energy is priced,
+        pairwise midpoint by default or one uniform price per tick (see ``PricingRule``).
         """
         if not households:
             raise ValueError("a simulator needs at least one household")
 
         self.epoch = epoch
         self.network_charge_eur_per_kwh = network_charge_eur_per_kwh
+        self.pricing = PricingRule(pricing)
         self.profiles: dict[str, HouseholdProfile] = {}
         self.environments: dict[str, HouseholdEnvironment] = {}
 
@@ -191,7 +194,9 @@ class MarketSimulator:
             for household_id, environment in self.environments.items()
         }
 
-        market_state = clear_tick(tick=tick, timestamp=timestamp, orders=orders)
+        market_state = clear_tick(
+            tick=tick, timestamp=timestamp, orders=orders, pricing=self.pricing
+        )
         settlements = settle_tick(
             market_state,
             self.profiles,
